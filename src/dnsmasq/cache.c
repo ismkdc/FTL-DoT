@@ -2372,6 +2372,15 @@ const char *edestr(int ede)
     }
 }
 
+static int error_occured(unsigned int flags) {
+  if (flags & F_RCODE)
+    return 1;
+  else if (flags & F_NEG)
+    return 1;
+  else
+    return 0;
+}
+
 /**** P-hole modified: Added file and line and serve log_query via macro defined in dnsmasq.h ****/
 void _log_query(unsigned int flags, char *name, union all_addr *addr, char *arg, unsigned short type, const char *file, const int line)
 {
@@ -2385,6 +2394,9 @@ void _log_query(unsigned int flags, char *name, union all_addr *addr, char *arg,
   char opcodestring[3]; /* maximum is 15 */
 
   if (!option_bool(OPT_LOG))
+    return;
+
+  if(option_bool(OPT_LOG_ONLY_FAILED) && !error_occured(flags))
     return;
 
   /* F_NOERR is reused here to indicate logs arrising from auth queries */ 

@@ -3466,6 +3466,8 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	    }
 	  else if (strcmp(arg, "auth") == 0)
 	    set_option_bool(OPT_AUTH_LOG);
+	  else if (strcmp(arg, "only_failed") == 0)
+	    set_option_bool(OPT_LOG_ONLY_FAILED);
 	}
       break;
 
