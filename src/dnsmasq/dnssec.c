@@ -439,8 +439,6 @@ int dec_counter(int *counter, char *message)
 /* Validate a single RRset (class, type, name) in the supplied DNS reply 
    Return code:
    STAT_SECURE   if it validates.
-   STAT_SECURE_WILDCARD if it validates and is the result of wildcard expansion.
-   (In this case *wildcard_out points to the "body" of the wildcard within name.) 
    STAT_BOGUS    signature is wrong, bad packet.
    STAT_ABANDONED validation abandoned do to excess resource usage.
    STAT_NEED_KEY need DNSKEY to complete validation (name is returned in keyname)
@@ -456,7 +454,7 @@ int dec_counter(int *counter, char *message)
    ttl_out is the floor on TTL, based on TTL and orig_ttl and expiration of sig used to validate.
 */
 static int validate_rrset(time_t now, struct dns_header *header, size_t plen, int class, int type, int sigidx, int rrsetidx, 
-			  char *name, char *keyname, char **wildcard_out, struct blockdata *key, int keylen,
+			  char *name, char *keyname, int *wildcard_offset_out, struct blockdata *key, int keylen,
 			  int algo_in, int keytag_in, unsigned long *ttl_out, int *validate_counter)
 {
   unsigned char *p;
@@ -469,8 +467,8 @@ static int validate_rrset(time_t now, struct dns_header *header, size_t plen, in
   unsigned long curtime = time(0);
   int time_check = is_check_date(curtime);
   
-  if (wildcard_out)
-    *wildcard_out = NULL;
+  if (wildcard_offset_out)
+    *wildcard_offset_out = 0;
   
   name_labels = count_labels(name); /* For 4035 5.3.2 check */
 
@@ -581,7 +579,9 @@ static int validate_rrset(time_t now, struct dns_header *header, size_t plen, in
 	  name_start = name;
 	  
 	  /* if more labels than in RRsig name, hash *.<no labels in rrsig labels field>  4035 5.3.2 */
-	  if (labels < name_labels)
+	  /* If the name is already the wildcard, we're not going to change it. */
+	  if (labels < name_labels &&
+	      !(name_labels - labels == 1 && name_start[0] == '*' && name_start[1] == '.'))
 	    {
 	      for (j = name_labels - labels; j != 0; j--)
 		{
@@ -591,11 +591,11 @@ static int validate_rrset(time_t now, struct dns_header *header, size_t plen, in
 		    name_start++;
 		}
 	      
-	      if (wildcard_out)
-		*wildcard_out = name_start+1;
-
+	      if (wildcard_offset_out)
+		*wildcard_offset_out = name_start - name + 1;
+	      
 	      name_start--;
-	      *name_start = '*';
+	      *name_start = '*';	      
 	    }
 	  
 	  wire_len = to_wire(name_start);
@@ -694,7 +694,7 @@ static int validate_rrset(time_t now, struct dns_header *header, size_t plen, in
 		  return STAT_ABANDONED;
 		
 		if (verify(crecp->addr.key.keydata, crecp->addr.key.keylen, sig, sig_len, digest, hash->digest_size, algo))
-		  return (labels < name_labels) ? STAT_SECURE_WILDCARD : STAT_SECURE;
+		  return STAT_SECURE;
 		
 		/* An attacker can waste a lot of our CPU by setting up a giant DNSKEY RRSET full of failing
 		   keys, all of which we have to try. Since many failing keys is not likely for
@@ -1552,7 +1552,7 @@ static int check_nsec3_coverage(struct dns_header *header, size_t plen, int dige
 
 /* returns 0 on success, or DNSSEC_FAIL_* value on failure. */
 static int prove_non_existence_nsec3(struct dns_header *header, size_t plen, unsigned char **nsecs, int nsec_count, char *workspace1,
-				     char *workspace2, char *name, int type, char *wildname, int *nons, int *validate_counter)
+				     char *workspace2, char *name, int type, int wild_offset, int *nons, int *validate_counter)
 {
   unsigned char *salt, *p, *digest;
   int digest_len, i, iterations, salt_len, base32_len, algo = 0;
@@ -1650,9 +1650,9 @@ static int prove_non_existence_nsec3(struct dns_header *header, size_t plen, uns
       if (*closest_encloser == '.')
 	closest_encloser++;
 
-      if (wildname && hostname_isequal(closest_encloser, wildname))
+      if (wild_offset != 0 && name - closest_encloser == wild_offset)
 	break;
-
+      
       if (dec_counter(validate_counter, NULL))
 	return DNSSEC_FAIL_WORK;
       
@@ -1694,7 +1694,7 @@ static int prove_non_existence_nsec3(struct dns_header *header, size_t plen, uns
     return DNSSEC_FAIL_NONSEC;
   
   /* Finally, check that there's no seat of wildcard synthesis */
-  if (!wildname)
+  if (wild_offset == 0)
     {
       if (!(wildcard = strchr(next_closest, '.')) || wildcard == next_closest)
 	return DNSSEC_FAIL_NONSEC;
@@ -1717,7 +1717,7 @@ static int prove_non_existence_nsec3(struct dns_header *header, size_t plen, uns
 
 /* returns 0 on success, or DNSSEC_FAIL_* value on failure. */
 static int prove_non_existence(struct dns_header *header, size_t plen, char *keyname, char *name, int qtype, int qclass,
-			       char *wildname, int *nons, int *nsec_ttl, int *validate_counter)
+			      int wild_offset, int *nons, int *nsec_ttl, int *validate_counter)
 {
   static unsigned char **nsecset = NULL, **rrsig_labels = NULL;
   static int nsecset_sz = 0, rrsig_labels_sz = 0;
@@ -1865,7 +1865,7 @@ static int prove_non_existence(struct dns_header *header, size_t plen, char *key
   if (type_found == T_NSEC)
     return prove_non_existence_nsec(header, plen, nsecset, rrsig_labels, nsecs_found, daemon->workspacename, keyname, name, qtype, nons);
   else if (type_found == T_NSEC3)
-    return prove_non_existence_nsec3(header, plen, nsecset, nsecs_found, daemon->workspacename, keyname, name, qtype, wildname, nons, validate_counter);
+    return prove_non_existence_nsec3(header, plen, nsecset, nsecs_found, daemon->workspacename, keyname, name, qtype, wild_offset, nons, validate_counter);
   else
     return DNSSEC_FAIL_NONSEC;
 }
@@ -2190,8 +2190,7 @@ int dnssec_validate_reply(time_t now, struct dns_header *header, size_t plen, ch
       else
 	{
 	  /* Not done, validate now */
-	  int sigcnt, rrcnt;
-	  char *wildname;
+	  int sigcnt, rrcnt, wild_offset;
 	  
 	  if (!explore_rrset(header, plen, class1, type1, name, keyname, &sigcnt, &rrcnt))
 	    return STAT_BOGUS;
@@ -2245,7 +2244,7 @@ int dnssec_validate_reply(time_t now, struct dns_header *header, size_t plen, ch
 		{
 		  unsigned long sig_ttl;
 		  rc = validate_rrset(now, header, plen, class1, type1, sigcnt,
-				      rrcnt, name, keyname, &wildname, NULL, 0, 0, 0, &sig_ttl, validate_counter);
+				      rrcnt, name, keyname, &wild_offset, NULL, 0, 0, 0, &sig_ttl, validate_counter);
 		  
 		  if (STAT_ISEQUAL(rc, STAT_BOGUS) || STAT_ISEQUAL(rc, STAT_NEED_KEY) || STAT_ISEQUAL(rc, STAT_NEED_DS) || STAT_ISEQUAL(rc, STAT_ABANDONED))
 		    {
@@ -2254,7 +2253,7 @@ int dnssec_validate_reply(time_t now, struct dns_header *header, size_t plen, ch
 		      return rc;
 		    } 
 		  
-		  /* rc is now STAT_SECURE or STAT_SECURE_WILDCARD */
+		  /* rc is now STAT_SECURE  */
 		  
 		  /* Note that RR is validated */
 		  daemon->rr_status[i] = sig_ttl;
@@ -2280,8 +2279,8 @@ int dnssec_validate_reply(time_t now, struct dns_header *header, size_t plen, ch
 		     Note that we may not yet have validated the NSEC/NSEC3 RRsets. 
 		     That's not a problem since if the RRsets later fail
 		     we'll return BOGUS then. */
-		  if (STAT_ISEQUAL(rc, STAT_SECURE_WILDCARD) &&
-		      ((rc_nsec = prove_non_existence(header, plen, keyname, name, type1, class1, wildname, NULL, NULL, validate_counter))) != 0)
+		  if (wild_offset != 0 &&
+		      ((rc_nsec = prove_non_existence(header, plen, keyname, name, type1, class1, wild_offset, NULL, NULL, validate_counter))) != 0)
 		    return  (rc_nsec & DNSSEC_FAIL_WORK) ? STAT_ABANDONED : (STAT_BOGUS | rc_nsec);
 
 		  rc = STAT_SECURE;
@@ -2309,7 +2308,7 @@ int dnssec_validate_reply(time_t now, struct dns_header *header, size_t plen, ch
 	   the answer is in an unsigned zone, or there's NSEC records.
 	   For a DS record, we return INSECURE, which almost always turns
 	   into BOGUS in the caller. */
-	if ((rc_nsec = prove_non_existence(header, plen, keyname, name, qtype, qclass, NULL, nons, nsec_ttl, validate_counter)) != 0)
+	if ((rc_nsec = prove_non_existence(header, plen, keyname, name, qtype, qclass, 0, nons, nsec_ttl, validate_counter)) != 0)
 	  {
 	    if (rc_nsec & DNSSEC_FAIL_WORK)
 	      return STAT_ABANDONED;
