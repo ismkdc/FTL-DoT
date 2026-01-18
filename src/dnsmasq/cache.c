@@ -2368,6 +2368,7 @@ const char *edestr(int ede)
     case EDE_UNS_NS3_ITER:                return "unsupported NSEC3 iterations value";
     case EDE_UNABLE_POLICY:               return "uanble to conform to policy";
     case EDE_SYNTHESIZED:                 return "synthesized";
+    case EDE_US_SERVFAIL:                 return "upstream returned SERVFAIL";
     default:                              return "unknown";
     }
 }
