@@ -16,6 +16,6 @@ set(CMAKE_C_STANDARD 17)
 
 project(PIHOLE_FTL C)
 
-set(DNSMASQ_VERSION pi-hole-v2.92rc3)
+set(DNSMASQ_VERSION pi-hole-v2.93test1)
 
 add_subdirectory(src)
