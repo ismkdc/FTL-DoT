@@ -293,7 +293,8 @@ struct event_desc {
 #define OPT_AUTH_LOG       76
 #define OPT_LEASEQUERY     77
 #define OPT_LOG_ONLY_FAILED  78
-#define OPT_LAST           79
+#define OPT_LOG_MALLOC     79
+#define OPT_LAST           80
 
 #define OPTION_BITS (sizeof(unsigned int)*8)
 #define OPTION_SIZE ( (OPT_LAST/OPTION_BITS)+((OPT_LAST%OPTION_BITS)!=0) )
@@ -1514,8 +1515,12 @@ unsigned char *do_rfc1035_name(unsigned char *p, char *sval, char *limit);
 void *safe_malloc(size_t size);
 void safe_strncpy(char *dest, const char *src, size_t size);
 void safe_pipe(int *fd, int read_noblock);
-void *whine_malloc(size_t size);
-void *whine_realloc(void *ptr, size_t size);
+#define whine_malloc(x) whine_malloc_real(__func__, __LINE__, (x))
+#define whine_realloc(x, y) whine_realloc_real(__func__, __LINE__, (x), (y))
+#define free(x) free_real(__func__, __LINE__, (x))
+void free_real(const char *func, unsigned int line, void *ptr);
+void *whine_malloc_real(const char *func, unsigned int line, size_t size);
+void *whine_realloc_real(const char *func, unsigned int line, void *ptr, size_t size);
 int sa_len(union mysockaddr *addr);
 int sockaddr_isequal(const union mysockaddr *s1, const union mysockaddr *s2);
 int sockaddr_isnull(const union mysockaddr *s);

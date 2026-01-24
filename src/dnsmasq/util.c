@@ -345,26 +345,6 @@ void safe_pipe(int *fd, int read_noblock)
     die(_("cannot create pipe: %s"), NULL, EC_MISC);
 }
 
-void *whine_malloc(size_t size)
-{
-  void *ret = calloc(1, size);
-
-  if (!ret)
-    my_syslog(LOG_ERR, _("failed to allocate %d bytes"), (int) size);
-  
-  return ret;
-}
-
-void *whine_realloc(void *ptr, size_t size)
-{
-  void *ret = realloc(ptr, size);
-
-  if (!ret)
-    my_syslog(LOG_ERR, _("failed to reallocate %d bytes"), (int) size);
-
-  return ret;
-}
-
 int sockaddr_isequal(const union mysockaddr *s1, const union mysockaddr *s2)
 {
   if (s1->sa.sa_family == s2->sa.sa_family)
@@ -958,3 +938,39 @@ int kernel_version(void)
   return version * 256 + (split ? atoi(split) : 0);
 }
 #endif
+
+#define hash_ptr(x) (((unsigned int)(((char *)(x)) - ((char *)NULL))) & 0xffffff)
+
+void *whine_malloc_real(const char *func, unsigned int line, size_t size)
+{
+  void *ret = calloc(1, size);
+  
+  if (!ret)
+    my_syslog(LOG_ERR, _("failed to allocate %d bytes"), (int) size);
+  else if (option_bool(OPT_LOG_MALLOC))
+    my_syslog(LOG_INFO, _("malloc: %s:%u %zu bytes at %x"), func, line, size, hash_ptr(ret));
+
+  return ret;
+}
+
+void *whine_realloc_real(const char *func, unsigned int line, void *ptr, size_t size)
+{
+  unsigned int old = hash_ptr(ptr);
+  void *ret = realloc(ptr, size);
+  
+  if (!ret)
+    my_syslog(LOG_ERR, _("failed to reallocate %d bytes"), (int) size);
+  else if (option_bool(OPT_LOG_MALLOC))
+    my_syslog(LOG_INFO, _("realloc: %s:%u %zu bytes from %x to %x"), func, line, size, old, hash_ptr(ret));
+  
+  return ret;
+}
+
+void free_real(const char *func, unsigned int line, void *ptr)
+{
+  if (option_bool(OPT_LOG_MALLOC))
+    my_syslog(LOG_INFO, _("free: %s:%u block at %x"), func, line, hash_ptr(ptr));
+  
+#undef free
+  free(ptr);
+}
