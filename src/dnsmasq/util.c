@@ -968,7 +968,7 @@ void *whine_realloc_real(const char *func, unsigned int line, void *ptr, size_t 
 
 void free_real(const char *func, unsigned int line, void *ptr)
 {
-  if (option_bool(OPT_LOG_MALLOC))
+  if (ptr && option_bool(OPT_LOG_MALLOC))
     my_syslog(LOG_INFO, _("free: %s:%u block at %x"), func, line, hash_ptr(ptr));
   
 #undef free
