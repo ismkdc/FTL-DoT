@@ -2017,11 +2017,11 @@ static void do_tcp_connection(struct listener *listener, time_t now, int slot)
   pid_t p;
   union mysockaddr tcp_addr;
   socklen_t tcp_len = sizeof(union mysockaddr);
-  unsigned char *buff;
   struct server *s; 
   int flags, auth_dns = 0;
   struct in_addr netmask;
   int pipefd[2];
+  struct iovec tcpbuff;
 #ifdef HAVE_LINUX_NETWORK
   unsigned char a = 0;
 #endif
@@ -2202,14 +2202,12 @@ static void do_tcp_connection(struct listener *listener, time_t now, int slot)
   FTL_iface(iface, NULL, 0);
   /**********************************************/
 
-  buff = tcp_request(confd, now, &tcp_addr, netmask, auth_dns);
 
   /************ Pi-hole modification ************/
   FTL_TCP_worker_terminating(true);
   /**********************************************/
-	      
-  if (buff)
-    free(buff);
+  tcp_request(confd, now, &tcpbuff, &tcp_addr, netmask, auth_dns);
+  free(tcpbuff.iov_base);
   
   for (s = daemon->servers; s; s = s->next)
     if (s->tcpfd != -1)
