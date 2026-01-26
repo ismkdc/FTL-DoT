@@ -2130,9 +2130,9 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 
   // Pi-hole
   char where = 0;
+  struct iovec sendio[2];
 #ifdef MSG_FASTOPEN
   struct msghdr msg;
-  struct iovec sendio[2];
 #endif
   
   (void)mark;
@@ -2144,6 +2144,12 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
     return 0;
   GETSHORT(type, p); 
   GETSHORT(class, p);
+
+  length = htons(qsize);
+  sendio[0].iov_base = &length;
+  sendio[0].iov_len = sizeof(length);
+  sendio[1].iov_base = header;
+  sendio[1].iov_len = qsize;
 
   while (1) 
     {
@@ -2166,8 +2172,6 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
       *servp = serv = daemon->serverarray[start];
       
     retry:
-      length = htons(qsize);
-      
       if (serv->tcpfd == -1)
 	{
 	  if ((serv->tcpfd = socket(serv->addr.sa.sa_family, SOCK_STREAM, 0)) == -1)
@@ -2198,12 +2202,7 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 	  tv.tv_sec += TCP_TIMEOUT;
 	  setsockopt(serv->tcpfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
-	  
 #ifdef MSG_FASTOPEN
-	  sendio[0].iov_base = (unsigned char *)&length;
-	  sendio[0].iov_len = sizeof(length);
-	  sendio[1].iov_base = (unsigned char *)header;
-	  sendio[1].iov_len = qsize;
 	  msg.msg_name = &serv->addr.sa;
 	  msg.msg_namelen = sa_len(&serv->addr);
 	  msg.msg_iov = sendio;
@@ -2242,14 +2241,12 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 	  serv->flags &= ~SERV_GOT_TCP;
 	}
       
-      /* We us the _ONCE variant of read_write() here because we've set a timeout on the tcp socket
+      /* We use the _ONCE variant of read_write() here because we've set a timeout on the tcp socket
 	 and wish to abort if the whole data is not read/written within the timeout. */      
-      if ((!data_sent && 
-	   ((where = 2) && !read_write(serv->tcpfd, (unsigned char *)&length, sizeof(length), RW_WRITE_ONCE) ||
-	   ((where = 3) && !read_write(serv->tcpfd, (unsigned char *)header, qsize, RW_WRITE_ONCE)))) ||
-	   ((where = 4) && !read_write(serv->tcpfd, (unsigned char *)&length, sizeof(length), RW_READ_ONCE)) ||
-	   ((where = 5) && !expand_buf(recvbuff, (rsize = ntohs(length)))) ||
-	   ((where = 6) && !read_write(serv->tcpfd, recvbuff->iov_base, rsize, RW_READ_ONCE)))
+      if ((!data_sent && (where = 2) && !read_writev(serv->tcpfd, sendio, 2, RW_WRITE_ONCE)) ||
+	   ((where = 3) && !read_write(serv->tcpfd, (unsigned char *)&length, sizeof(length), RW_READ_ONCE)) ||
+	   ((where = 4) && !expand_buf(recvbuff, (rsize = ntohs(length)))) ||
+	   ((where = 5) && !read_write(serv->tcpfd, recvbuff->iov_base, rsize, RW_READ_ONCE)))
       {
 	  /* We get data then EOF, reopen connection to same server,
 	     else try next. This avoids DoS from a server which accepts
@@ -2486,7 +2483,8 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
   /************ Pi-hole modification ************/
   bool piholeblocked = false;
   /**********************************************/
-
+  struct iovec out_iov[2];
+  
   bigbuff->iov_base = NULL;
   bigbuff->iov_len = 0;
   
@@ -2888,9 +2886,13 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 	  report_addresses(header, m, mark);
 #endif
       
+      /* use scatter-gather IO so that length doesn't end up in separate packet. */
       out_len = htons(m);
-      if (!read_write(confd, (unsigned char *)&out_len, sizeof(out_len), RW_WRITE) |
-	  !read_write(confd, bigbuff->iov_base, m, RW_WRITE))
+      out_iov[0].iov_len = sizeof(out_len);
+      out_iov[0].iov_base = &out_len;
+      out_iov[1].iov_len = m;
+      out_iov[1].iov_base = bigbuff->iov_base;
+      if (!read_writev(confd, out_iov, 2, RW_WRITE))
 	break;
       
       /* If we answered with stale data, this process will now try and get fresh data into
