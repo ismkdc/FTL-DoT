@@ -177,6 +177,7 @@
 // caused by insufficient memory or by code bugs (not properly dealing
 // with NULL pointers) much easier.
 #undef strdup // strdup() is a macro in itself, it needs special handling
+#undef free
 #define free(ptr) { FTLfree(ptr, __FILE__,  __FUNCTION__,  __LINE__); ptr = NULL; }
 #define strdup(str_in) FTLstrdup(str_in, __FILE__,  __FUNCTION__,  __LINE__)
 #define calloc(numer_of_elements, element_size) FTLcalloc(numer_of_elements, element_size, __FILE__,  __FUNCTION__,  __LINE__)
