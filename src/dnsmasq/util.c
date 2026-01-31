@@ -794,7 +794,7 @@ int read_writev(int fd, struct iovec *iov, int iovcnt, int rw)
 	return 0;
       
       done += n;
-      while ((size_t)done >= iov[cur].iov_len)
+      while (cur < iovcnt && (size_t)done >= iov[cur].iov_len)
 	done -= iov[cur++].iov_len;
     }
           
