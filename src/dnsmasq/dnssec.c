@@ -1430,7 +1430,10 @@ static int base32_decode(char *in, unsigned char *out)
 	    oc |= 1;
 	  mask = mask >> 1;
 	  if (((++on) & 7) == 0)
-	    *p++ = oc;
+	    {
+	      *p++ = oc;
+	      oc = 0;
+	    }
 	  oc = oc << 1;
 	}
     }
