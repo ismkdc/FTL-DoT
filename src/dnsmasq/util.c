@@ -331,13 +331,15 @@ void *safe_malloc(size_t size)
 }
 
 /* Ensure limited size string is always terminated.
- * Can be replaced by (void)strlcpy() on some platforms */
+   Can be replaced by (void)strlcpy() on some platforms.
+   src may be NULL in which case we return an empty string. */
 void safe_strncpy(char *dest, const char *src, size_t size)
 {
   if (size != 0)
     {
-      dest[size-1] = '\0';
-      strncpy(dest, src, size-1);
+      dest[0] = dest[size-1] = '\0';
+      if (src)
+	strncpy(dest, src, size-1);
     }
 }
 
