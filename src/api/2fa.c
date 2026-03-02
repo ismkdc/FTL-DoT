@@ -33,8 +33,11 @@ static uint32_t hotp(const uint8_t *key, size_t key_len, const uint64_t counter,
 	// Compute HMAC-SHA1
 	hmac_sha1_update(&ctx, sizeof(counter_be), (uint8_t*)&counter_be);
 	uint8_t out[SHA1_DIGEST_SIZE];
+#if NETTLE_VERSION_MAJOR >= 4
+	hmac_sha1_digest(&ctx, out);
+#else
 	hmac_sha1_digest(&ctx, SHA1_DIGEST_SIZE, out);
-
+#endif
 	// Truncate HMAC-SHA1 for ease of use
 	// RFC 6238 (section 5.3): offset = last nibble of hash
 	const uint8_t offset = out[SHA1_DIGEST_SIZE-1] & 0x0F;

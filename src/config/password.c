@@ -76,7 +76,11 @@ static char * __attribute__((malloc)) double_sha256_password(const char *passwor
 	              strlen(password),
 	              (uint8_t*)password);
 
+#if NETTLE_VERSION_MAJOR >= 4
+	sha256_digest(&ctx, raw_response);
+#else
 	sha256_digest(&ctx, SHA256_DIGEST_SIZE, raw_response);
+#endif
 	sha256_raw_to_hex(raw_response, response);
 
 	// Hash password a second time
@@ -85,7 +89,11 @@ static char * __attribute__((malloc)) double_sha256_password(const char *passwor
 	              strlen(response),
 	              (uint8_t*)response);
 
+#if NETTLE_VERSION_MAJOR >= 4
+	sha256_digest(&ctx, raw_response);
+#else
 	sha256_digest(&ctx, SHA256_DIGEST_SIZE, raw_response);
+#endif
 	sha256_raw_to_hex(raw_response, response);
 
 	return strdup(response);

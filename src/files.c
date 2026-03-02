@@ -38,6 +38,10 @@
 // flock(), LOCK_SH
 #include <sys/file.h>
 
+// crypto library
+#include <nettle/sha2.h>
+#include <nettle/version.h>
+
 // chmod_file() changes the file mode bits of a given file (relative
 // to the directory file descriptor) according to mode. mode is an
 // octal number representing the bit pattern for the new mode bits
@@ -755,8 +759,11 @@ bool sha256sum(const char *path, uint8_t checksum[SHA256_DIGEST_SIZE], const boo
 	}
 
 	// Finalize SHA256 context
+#if NETTLE_VERSION_MAJOR >= 4
+	sha256_digest(&ctx, checksum);
+#else
 	sha256_digest(&ctx, SHA256_DIGEST_SIZE, checksum);
-
+#endif
 	// Close file
 	fclose(fp);
 
