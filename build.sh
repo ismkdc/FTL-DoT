@@ -95,6 +95,16 @@ if [[ -n "${debug}" ]]; then
     restart=1
 fi
 
+# If we are building in debug mode, ensure CMake is configured for a Debug build
+# This appends the cache entry so callers can still pass other -D options.
+if [[ -n "${debug}" ]]; then
+    if [[ -n "${cmake_args}" ]]; then
+        cmake_args="${cmake_args} -DCMAKE_BUILD_TYPE=Debug"
+    else
+        cmake_args="-DCMAKE_BUILD_TYPE=Debug"
+    fi
+fi
+
 # If we are in dev mode, we want to build, install, restart, and tail the logs
 # by default
 if [[ -n "${dev}" ]]; then

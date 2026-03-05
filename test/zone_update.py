@@ -14,9 +14,12 @@ import dns.query
 import dns.update
 import dns.rcode
 
+# Usage: python3 zone_update.py [proto = tcp] [port = 5300] [server = 127.0.0.1]
+
+# Get the protocol, server, and port from command line arguments or use defaults
 proto = sys.argv[1] if len(sys.argv) > 1 else 'tcp'
-server = sys.argv[2] if len(sys.argv) > 2 else '127.0.0.1'
-port = int(sys.argv[3]) if len(sys.argv) > 3 else 53
+port = int(sys.argv[2]) if len(sys.argv) > 2 else 5300
+server = sys.argv[3] if len(sys.argv) > 3 else '127.0.0.1'
 
 # Create a new update object
 update = dns.update.Update('example.com')
