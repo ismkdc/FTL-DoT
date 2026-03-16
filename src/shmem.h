@@ -36,6 +36,7 @@ typedef struct {
 
 typedef struct {
 	unsigned int queries;
+	unsigned int queries_offset;
 	unsigned int upstreams;
 	unsigned int clients;
 	unsigned int domains;

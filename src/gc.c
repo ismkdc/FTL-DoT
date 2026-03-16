@@ -495,50 +495,20 @@ void runGC(const time_t now, time_t *lastGCrun, const bool flush)
 	// Only perform memory operations when we actually removed queries
 	if(removed > 0)
 	{
-		// Move memory forward to keep only what we want
-		// Note: for overlapping memory blocks, memmove() is a safer approach than memcpy()
+		// Instead of memmove-ing all surviving queries to the front
+		// (which copies potentially millions of entries under the SHM lock),
+		// we simply advance the queries_offset. The _getQuery() function
+		// adds this offset when translating logical indices to physical
+		// array positions, so all code transparently sees the correct data.
 		//
-		//  ┌──────────────────────┐
-		//  │ Example: removed = 5 │▒
-		//  │                      │▒
-		//  │ query with ID = 6    │▒
-		//  │ is moved to ID = 0,  │▒
-		//  │ 7 ─> 1, 8 ─> 2, etc. │▒
-		//  │                      │▒
-		//  │ ID:         111111   │▒
-		//  │   0123456789012345   │▒
-		//  │                      │▒
-		//  │   ......QQQQ------   │▒
-		//  │         vvvv         │▒
-		//  │   ┌─────┘│││         │▒
-		//  │   │┌─────┘││         │▒
-		//  │   ││┌─────┘│         │▒
-		//  │   │││┌─────┘         │▒
-		//  │   vvvv               │▒
-		//  │   QQQQ------------   │▒
-		//  └──────────────────────┘▒
-		//    ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
-		//
-		// Legend: . = removed queries, Q = valid queries, - = free space
-		//
-		// We move the memory block starting at the first valid query (index 5) to the
-		// beginning of the memory block, overwriting the invalid queries (index 0-4).
-		// The remaining memory (index 5-15) is then zeroed out by memset() below.
-		queriesData *dest = getQuery(0, true);
-		queriesData *src = getQuery(removed, true);
-		if(dest != NULL && src != NULL)
-			memmove(dest, src, (counters->queries - removed)*sizeof(queriesData));
-
-		// Update queries counter
+		// Dead space at the front [0..offset-1] is reclaimed lazily:
+		// shm_ensure_size() compacts (memmove + reset offset) only when
+		// the physical array actually runs out of room.
+		counters->queries_offset += removed;
 		counters->queries -= removed;
 
-		// Invalidate the query ID cache since all indices shifted
+		// Invalidate the query ID cache since all logical indices shifted
 		queryIDMap_clear();
-
-		// Ensure remaining memory is zeroed out (marked as "F" in the above example)
-		queriesData *tail = getQuery(counters->queries, true);
-		if(tail)
-			memset(tail, 0, (counters->queries_MAX - counters->queries)*sizeof(queriesData));
 	}
 
 	// Recycle old clients and domains

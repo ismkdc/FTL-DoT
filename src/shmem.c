@@ -1143,14 +1143,28 @@ static size_t get_optimal_object_size(const size_t objsize, const size_t minsize
 // Enlarge shared memory to be able to hold at least one new record
 static void shm_ensure_size(void)
 {
-	if(counters->queries >= counters->queries_MAX-1)
+	if(counters->queries + counters->queries_offset >= counters->queries_MAX-1)
 	{
-		// Have to reallocate shared memory
-		queries = enlarge_shmem_struct(QUERIES, 1);
-		if(queries == NULL)
+		// Try to compact before growing: reclaim dead space at the front
+		if(counters->queries_offset > 0)
 		{
-			log_crit("Memory allocation failed! Exiting");
-			exit(EXIT_FAILURE);
+			memmove(queries, queries + counters->queries_offset,
+			        counters->queries * sizeof(queriesData));
+			memset(queries + counters->queries, 0,
+			       counters->queries_offset * sizeof(queriesData));
+			counters->queries_offset = 0;
+			queryIDMap_clear();
+		}
+
+		// After compaction, check if we still need to grow
+		if(counters->queries >= counters->queries_MAX-1)
+		{
+			queries = enlarge_shmem_struct(QUERIES, 1);
+			if(queries == NULL)
+			{
+				log_crit("Memory allocation failed! Exiting");
+				exit(EXIT_FAILURE);
+			}
 		}
 	}
 	if(counters->upstreams >= counters->upstreams_MAX-1)
@@ -1334,13 +1348,16 @@ queriesData *_getQuery(const unsigned int queryID, const bool checkMagic, const 
 		return NULL;
 	}
 
+	// Apply offset for physical array access
+	const unsigned int physID = queryID + counters->queries_offset;
+
 	// Check allowed range
-	if(!check_range(queryID, counters->queries_MAX, "query", func, line, file))
+	if(!check_range(physID, counters->queries_MAX, "query", func, line, file))
 		return NULL;
 
 	// Check magic byte
-	if(check_magic(queryID, checkMagic, queries[queryID].magic, "query", func, line, file))
-		return &queries[queryID];
+	if(check_magic(physID, checkMagic, queries[physID].magic, "query", func, line, file))
+		return &queries[physID];
 
 	return NULL;
 }
