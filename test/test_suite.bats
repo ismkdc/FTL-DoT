@@ -2016,6 +2016,66 @@ setup() {
   [[ ${lines[0]} == "{\"error\":{\"key\":\"bad_request\",\"message\":\"Config item is invalid\",\"hint\":\"dns.cnameRecords: array has invalid elements\"},\"took\":"*"}" ]]
 }
 
+@test "API /stats/summary: Returns valid summary JSON with expected fields" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/summary'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"queries":{"total":130,"blocked":49,"percent_blocked":37.692306518554688,"unique_domains":77,"forwarded":44,"cached":37,"frequency":4.333333333333333,"types":{"A":69,"AAAA":19,"ANY":3,"SRV":1,"SOA":0,"PTR":4,"TXT":10,"NAPTR":1,"MX":1,"DS":7,"RRSIG":0,"DNSKEY":6,"NS":0,"SVCB":3,"HTTPS":3,"OTHER":1},"status":{"UNKNOWN":0,"GRAVITY":7,"FORWARDED":44,"CACHE":37,"REGEX":21,"DENYLIST":4,"EXTERNAL_BLOCKED_IP":4,"EXTERNAL_BLOCKED_NULL":3,"EXTERNAL_BLOCKED_NXRA":0,"GRAVITY_CNAME":6,"REGEX_CNAME":0,"DENYLIST_CNAME":0,"RETRIED":0,"RETRIED_DNSSEC":0,"IN_PROGRESS":0,"DBBUSY":0,"SPECIAL_DOMAIN":2,"CACHE_STALE":0,"EXTERNAL_BLOCKED_EDE15":2},"replies":{"UNKNOWN":0,"NODATA":6,"NXDOMAIN":8,"CNAME":13,"IP":63,"DOMAIN":2,"RRNAME":12,"SERVFAIL":0,"REFUSED":6,"NOTIMP":2,"OTHER":0,"DNSSEC":7,"NONE":1,"BLOB":10}},"clients":{"active":11,"total":11},"gravity":{"domains_being_blocked":8,"last_update":0},"took":'*'}' ]]
+}
+
+@test "API /stats/top_domains: Returns expected structure, sorted descending" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/top_domains?blocked=false'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"domains":[{"domain":"localhost","count":5},{"domain":"regex1.ftl","count":4},{"domain":"version.bind","count":4},{"domain":"pihole.mydomain.net","count":4},{"domain":"regex-notmultiple.ftl","count":3},{"domain":"aaaa.ftl","count":3},{"domain":"a.ftl","count":3},{"domain":"com","count":2},{"domain":"antigravity.ftl","count":2},{"domain":"regex-nota","count":2}],"total_queries":130,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/top_domains: count parameter limits results" {
+  run bash -c 'curl -s "127.0.0.1/api/stats/top_domains?count=2" | jq ".domains | length"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} -le 2 ]]
+}
+
+@test "API /stats/top_domains?blocked=true: Returns blocked domains including gravity.ftl, sorted descending" {
+  run bash -c 'curl -s "127.0.0.1/api/stats/top_domains?blocked=true"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"domains":[{"domain":"gravity.ftl","count":8},{"domain":"denied.ftl","count":4},{"domain":"umbrella.ftl","count":3},{"domain":"null.ftl","count":3},{"domain":"regex-multiple.ftl","count":3},{"domain":"regex5.ftl","count":2},{"domain":"regex-replyv46","count":2},{"domain":"regex-notmultiple.ftl","count":2},{"domain":"a-cname.ftl","count":2},{"domain":"regex-replyv6","count":2}],"total_queries":130,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/top_domains: Permitted domains do not include blocked-only domains" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/top_domains'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"domains":[{"domain":"localhost","count":5},{"domain":"regex1.ftl","count":4},{"domain":"version.bind","count":4},{"domain":"pihole.mydomain.net","count":4},{"domain":"regex-notmultiple.ftl","count":3},{"domain":"aaaa.ftl","count":3},{"domain":"a.ftl","count":3},{"domain":"com","count":2},{"domain":"antigravity.ftl","count":2},{"domain":"regex-nota","count":2}],"total_queries":130,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/top_clients: Returns expected structure with 127.0.0.1 on top, sorted descending" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/top_clients'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"clients":[{"name":"","ip":"127.0.0.1","count":103},{"name":"","ip":"::","count":13},{"name":"","ip":"127.0.0.3","count":4},{"name":"","ip":"127.0.0.2","count":4},{"name":"some-aliasclient","ip":"aliasclient-0","count":1},{"name":"","ip":"127.0.0.4","count":1},{"name":"","ip":"127.0.0.5","count":1},{"name":"","ip":"192.168.1.1","count":1},{"name":"","ip":"192.168.47.97","count":1},{"name":"","ip":"fe80::b167:af1e:968b:dead","count":1}],"total_queries":130,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/top_clients: count parameter limits results" {
+  run bash -c 'curl -s "127.0.0.1/api/stats/top_clients?count=1" | jq ".clients | length"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} -eq 1 ]]
+}
+
+@test "API /stats/top_clients?blocked=true: Returns clients with blocked queries, sorted descending" {
+  run bash -c 'curl -s "127.0.0.1/api/stats/top_clients?blocked=true"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == '{"clients":[{"name":"","ip":"127.0.0.1","count":47},{"name":"","ip":"127.0.0.2","count":2}],"total_queries":130,"blocked_queries":49,"took":'*'}' ]]
+}
+
+@test "API /stats/upstreams: Returns upstream list with blocklist and cache entries" {
+  run bash -c 'curl -s 127.0.0.1/api/stats/upstreams | jq "(.upstreams | length) >= 2 and .upstreams[0].ip == \"blocklist\" and .upstreams[1].ip == \"cache\" and .total_queries > 0 and (.forwarded_queries != null)"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == "true" ]]
+}
+
+@test "API /stats/upstreams: Blocklist count matches summary blocked count" {
+  run bash -c 'upstream_blocked=$(curl -s 127.0.0.1/api/stats/upstreams | jq ".upstreams[0].count"); summary_blocked=$(curl -s 127.0.0.1/api/stats/summary | jq ".queries.blocked"); [ "$upstream_blocked" = "$summary_blocked" ] && echo "match" || echo "mismatch: $upstream_blocked vs $summary_blocked"'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == "match" ]]
+}
+
 @test "Create, set, and use application password" {
   run bash -c 'curl -s 127.0.0.1/api/auth/app'
   printf "%s\n" "${lines[@]}"
