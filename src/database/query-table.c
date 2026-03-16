@@ -1762,12 +1762,13 @@ bool queries_to_database(void)
 			const upstreamsData *upstream = getUpstream(query->upstreamID, true);
 			if(upstream != NULL)
 			{
-				char *buffer = NULL;
 				const char *forwardIP = getstr(upstream->ippos);
-				int len = 0; // The length of the string WITHOUT the NUL byte. This is what sqlite3_bind_text() expects.
-				if((len = asprintf(&buffer, "%s#%u", forwardIP, upstream->port)) > 0)
+				// IPv6 max 45 + '#' + port max 5 + NUL = 52, use 64 for safety
+				char buffer[64];
+				const int len = snprintf(buffer, sizeof(buffer), "%s#%u", forwardIP, upstream->port);
+				if(len > 0 && (size_t)len < sizeof(buffer))
 				{
-					// Use transient here as we step only after the buffer is freed below
+					// Use transient here as we step only after the buffer goes out of scope
 					sqlite3_bind_text(query_stmt, 8, buffer, len, SQLITE_TRANSIENT);
 					// Use static here as we insert right away
 					sqlite3_bind_text(forward_stmt, 1, buffer, len, SQLITE_STATIC);
@@ -1784,11 +1785,9 @@ bool queries_to_database(void)
 				}
 				else
 				{
-					// Memory error: Do not store the forward destination
+					// Formatting error: Do not store the forward destination
 					sqlite3_bind_null(query_stmt, 8);
 				}
-
-				if(buffer) free(buffer);
 			}
 		}
 		else
