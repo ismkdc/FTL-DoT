@@ -620,10 +620,6 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// Get timestamp
 	const double querytimestamp = double_time();
 
-	// Save request time
-	struct timeval request;
-	gettimeofday(&request, 0);
-
 	// Determine query type
 	enum query_type querytype;
 	switch(qtype)
@@ -2645,13 +2641,6 @@ static void FTL_reply(const unsigned int flags, const char *name, const union al
 	{
 		log_warn("Unknown upstream REPLY, exact: %s, type: %u",
 		         isExactMatch ? "true" : "false", query->type);
-	}
-
-	if(query && option_bool(OPT_DNSSEC_PROXY))
-	{
-		// DNSSEC proxy mode is enabled. Interpret AD flag
-		// and set DNSSEC status accordingly
-		query_set_dnssec(query, adbit ? DNSSEC_SECURE : DNSSEC_INSECURE);
 	}
 
 	if(query && option_bool(OPT_DNSSEC_PROXY))
