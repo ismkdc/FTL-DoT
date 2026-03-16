@@ -74,62 +74,19 @@ static void recycle(void)
 	const double now = double_time();
 	const double twentyfour_hrs_ago = now - 24*3600;
 
-	// Allocate memory for recycling
-	bool *client_used = calloc(counters->clients, sizeof(bool));
-	bool *domain_used = calloc(counters->domains, sizeof(bool));
-	bool *cache_used = calloc(counters->dns_cache_size, sizeof(bool));
-	if(client_used == NULL || domain_used == NULL || cache_used == NULL)
-	{
-		log_err("Cannot allocate memory for recycling");
-		return;
-	}
-
-	// Find list of client and domain IDs no active query is referencing anymore
-	// and recycle them
-	for(unsigned int queryID = 0; queryID < counters->queries; queryID++)
-	{
-		const queriesData *query = getQuery(queryID, true);
-		if(query == NULL)
-			continue;
-
-		// Mark client and domain as used
-		client_used[query->clientID] = true;
-		domain_used[query->domainID] = true;
-
-		// Mark CNAME domain as used (if any)
-		if(query->CNAME_domainID > -1)
-			domain_used[query->CNAME_domainID] = true;
-
-		// Mark cache entry as used (if any)
-		if(query->cacheID > -1)
-			cache_used[query->cacheID] = true;
-	}
-
-	// Scan cache records for CNAME domain pointers that prevent domains
-	// from being recyclable
-	for(unsigned int cacheID = 0; cacheID < counters->dns_cache_size; cacheID++)
-	{
-		const DNSCacheData *cache = getDNSCache(cacheID, true);
-		if(cache == NULL)
-			continue;
-
-		// Mark domains as used when this is a CNAME-related cache
-		// record
-		if(cache->blocking_status == QUERY_GRAVITY_CNAME ||
-		   cache->blocking_status == QUERY_REGEX_CNAME ||
-		   cache->blocking_status == QUERY_DENYLIST_CNAME)
-		   domain_used[cache->CNAME_domainID] = true;
-	}
-
 	// Recycle clients
+	// A client can be recycled when no active query references it,
+	// which is indicated by client->count == 0 (maintained incrementally
+	// during query creation and GC removal).
 	unsigned int clients_recycled = 0;
 	for(unsigned int clientID = 0; clientID < counters->clients; clientID++)
 	{
-		if(client_used[clientID])
-			continue;
-
 		clientsData *client = getClient(clientID, true);
 		if(client == NULL)
+			continue;
+
+		// Skip if still referenced by at least one query
+		if(client->count > 0)
 			continue;
 
 		// Never recycle aliasclients (they are not counted above but
@@ -159,14 +116,18 @@ static void recycle(void)
 	}
 
 	// Recycle domains
+	// A domain can be recycled when no active query references it either
+	// directly (domain->count == 0) or via CNAME chain
+	// (domain->cname_refcount == 0), and its last query was > 24h ago.
 	unsigned int domains_recycled = 0;
 	for(unsigned int domainID = 0; domainID < counters->domains; domainID++)
 	{
-		if(domain_used[domainID])
-			continue;
-
 		domainsData *domain = getDomain(domainID, true);
 		if(domain == NULL)
+			continue;
+
+		// Skip if still referenced by any query or CNAME chain
+		if(domain->count > 0 || domain->cname_refcount > 0)
 			continue;
 
 		// Only recycle domains when their last query was more than 24
@@ -198,15 +159,34 @@ static void recycle(void)
 	}
 
 	// Recycle cache records
+	// A cache entry can be recycled when no active query references it,
+	// which is indicated by cache->refcount == 0 (maintained
+	// incrementally).
 	unsigned int cache_recycled = 0;
 	for(unsigned int cacheID = 0; cacheID < counters->dns_cache_size; cacheID++)
 	{
-		if(cache_used[cacheID])
-			continue;
-
 		DNSCacheData *cache = getDNSCache(cacheID, true);
 		if(cache == NULL)
 			continue;
+
+		// Skip if still referenced by at least one query
+		if(cache->refcount > 0)
+			continue;
+
+		// If this cache entry held a CNAME domain reference, decrement
+		// that domain's cname_refcount. CNAME_domainID is initialized
+		// to (unsigned int)-1 in findCacheID() and only set to a valid
+		// value when cname_refcount is incremented
+		// (dnsmasq_interface.c, CNAME chain blocking). We check the
+		// sentinel rather than blocking_status because gravity reloads
+		// can reset blocking_status to QUERY_UNKNOWN without clearing
+		// CNAME_domainID.
+		if(cache->CNAME_domainID != (unsigned int)-1)
+		{
+			domainsData *cname_domain = getDomain(cache->CNAME_domainID, true);
+			if(cname_domain != NULL)
+				cname_domain->cname_refcount--;
+		}
 
 		log_debug(DEBUG_GC, "Recycling cache entry with ID %u", cacheID);
 
@@ -221,11 +201,6 @@ static void recycle(void)
 
 		cache_recycled++;
 	}
-
-	// Free memory
-	free(client_used);
-	free(domain_used);
-	free(cache_used);
 
 	// Scan number of recycled clients, domains, and cache entries if in
 	// debug mode
@@ -461,6 +436,22 @@ void runGC(const time_t now, time_t *lastGCrun, const bool flush)
 			if(upstream != NULL)
 				// Adjust upstream counter
 				upstream->count--;
+		}
+
+		// Adjust cache refcount
+		if(query->cacheID > -1)
+		{
+			DNSCacheData *cache = getDNSCache(query->cacheID, true);
+			if(cache != NULL)
+				cache->refcount--;
+		}
+
+		// Adjust CNAME domain refcount
+		if(query->CNAME_domainID > -1)
+		{
+			domainsData *cname_domain = getDomain(query->CNAME_domainID, true);
+			if(cname_domain != NULL)
+				cname_domain->cname_refcount--;
 		}
 
 		// Update reply counters

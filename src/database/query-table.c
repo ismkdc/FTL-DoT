@@ -1431,6 +1431,7 @@ void DB_read_queries(void)
 		domain->lastQuery = queryTimeStamp;
 
 		// Get additional information from the additional_info column if applicable
+		int list_id_avail = false;
 		if(status == QUERY_GRAVITY_CNAME ||
 		   status == QUERY_REGEX_CNAME ||
 		   status == QUERY_DENYLIST_CNAME )
@@ -1448,21 +1449,28 @@ void DB_read_queries(void)
 				// Get domain pointer and update lastQuery timer
 				domainsData *cdomain = getDomain(CNAMEdomainID, true);
 				if(cdomain != NULL)
+				{
 					cdomain->lastQuery = queryTimeStamp;
+					cdomain->cname_refcount++;
+				}
 			}
 		}
-		else if(sqlite3_column_bytes(stmt, 7) != 0)
+		else if((list_id_avail = sqlite3_column_bytes(stmt, 7) != 0))
 		{
 			// Set ID of the domainlist entry that was the reason for permitting/blocking this query
 			// We assume the value in this field is said ID when it is not a CNAME-related domain
 			// (checked above) and the value of additional_info is not NULL (0 bytes storage size)
 			query->cacheID = findCacheID(domainID, clientID, query->type, true);
 			DNSCacheData *cache = getDNSCache(query->cacheID, true);
-			// Only load if
-			//  a) we have a cache entry
-			//  b) the value of additional_info is not NULL (0 bytes storage size)
-			if(cache != NULL && sqlite3_column_bytes(stmt, 7) != 0)
-				cache->list_id = sqlite3_column_int(stmt, 7);
+			if(cache != NULL)
+			{
+				cache->refcount++;
+				// Only load if
+				//  a) we have a cache entry
+				//  b) the value of additional_info is not NULL (0 bytes storage size)
+				if(list_id_avail)
+					cache->list_id = sqlite3_column_int(stmt, 7);
+			}
 		}
 
 		// Increment status counters

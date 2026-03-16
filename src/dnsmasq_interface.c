@@ -923,6 +923,9 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// Initialize cache ID, may be reusing an existing one if this
 	// (domain,client,type) tuple was already seen before
 	query->cacheID = findCacheID(domainID, clientID, querytype, true);
+	DNSCacheData *dns_cache_entry = query->cacheID > -1 ? getDNSCache(query->cacheID, true) : NULL;
+	if(dns_cache_entry != NULL)
+		dns_cache_entry->refcount++;
 
 
 	// Increase DNS queries counter
@@ -1570,7 +1573,12 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 				force_next_DNS_reply = dns_cache->force_reply;
 				query_blocked(query, domain, client, blocking_status);
 				if(blocking_status == QUERY_DENYLIST_CNAME)
+				{
 					query->CNAME_domainID = dns_cache->CNAME_domainID;
+					domainsData *cname_domain = getDomain(dns_cache->CNAME_domainID, true);
+					if(cname_domain != NULL)
+						cname_domain->cname_refcount++;
+				}
 				return true;
 			}
 			break;
@@ -1589,7 +1597,12 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 				force_next_DNS_reply = dns_cache->force_reply;
 				query_blocked(query, domain, client, blocking_status);
 				if(blocking_status == QUERY_GRAVITY_CNAME)
+				{
 					query->CNAME_domainID = dns_cache->CNAME_domainID;
+					domainsData *cname_domain = getDomain(dns_cache->CNAME_domainID, true);
+					if(cname_domain != NULL)
+						cname_domain->cname_refcount++;
+				}
 				return true;
 			}
 			break;
@@ -1610,7 +1623,12 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 				last_regex_idx = dns_cache->list_id;
 				query_blocked(query, domain, client, blocking_status);
 				if(blocking_status == QUERY_REGEX_CNAME)
+				{
 					query->CNAME_domainID = dns_cache->CNAME_domainID;
+					domainsData *cname_domain = getDomain(dns_cache->CNAME_domainID, true);
+					if(cname_domain != NULL)
+						cname_domain->cname_refcount++;
+				}
 				return true;
 			}
 			break;
@@ -1946,12 +1964,19 @@ bool FTL_CNAME(const char *dst, const char *src, const int id)
 
 		// Store domain that was the reason for blocking the entire chain
 		query->CNAME_domainID = child_domainID;
+		domainsData *child_domain_data = getDomain(child_domainID, true);
+		if(child_domain_data != NULL)
+			child_domain_data->cname_refcount++;
 
 		// Store CNAME domain ID in DNS cache
 		const int parent_cacheID = query->cacheID > -1 ? query->cacheID : findCacheID(parent_domainID, clientID, query->type, false);
 		DNSCacheData *parent_cache = parent_cacheID < 0 ? NULL : getDNSCache(parent_cacheID, true);
 		if(parent_cache != NULL)
+		{
 			parent_cache->CNAME_domainID = child_domainID;
+			if(child_domain_data != NULL)
+				child_domain_data->cname_refcount++;
+		}
 
 		// Change blocking reason into CNAME-caused blocking
 		if(query->status == QUERY_GRAVITY)
@@ -3872,6 +3897,12 @@ void FTL_multiple_replies(const int id, int *firstID)
 	duplicated_query->dnssec = source_query->dnssec;
 	duplicated_query->flags.complete = true;
 	duplicated_query->CNAME_domainID = source_query->CNAME_domainID;
+	if(duplicated_query->CNAME_domainID > -1)
+	{
+		domainsData *cname_domain = getDomain(duplicated_query->CNAME_domainID, true);
+		if(cname_domain != NULL)
+			cname_domain->cname_refcount++;
+	}
 
 	// The original query may have been blocked during CNAME inspection,
 	// correct status in this case

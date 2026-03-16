@@ -569,6 +569,7 @@ int _findCacheID(const unsigned int domainID, const unsigned int clientID, const
 	dns_cache->clientID = clientID;
 	dns_cache->query_type = query_type;
 	dns_cache->force_reply = 0u;
+	dns_cache->CNAME_domainID = (unsigned int)-1; // not set
 	dns_cache->list_id = -1; // -1 = not set
 
 	// Increase counter by one

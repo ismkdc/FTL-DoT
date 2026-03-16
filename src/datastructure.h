@@ -102,6 +102,7 @@ typedef struct {
 	unsigned char magic;
 	int count;
 	int blockedcount;
+	int cname_refcount;
 	uint32_t hash;
 	size_t domainpos;
 	double lastQuery;
@@ -119,6 +120,7 @@ typedef struct {
 	unsigned int clientID;
 	unsigned int CNAME_domainID; // only valid if query has a CNAME blocking status
 	int list_id;
+	int refcount;
 	uint32_t hash;
 	time_t expires;
 	char *cname_target;
