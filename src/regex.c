@@ -420,6 +420,19 @@ static int match_regex(const char *input, DNSCacheData *dns_cache, const int cli
 			continue;
 		}
 
+		// Check query type filtering before running the expensive regex
+		// engine. This is a simple bitmask check that can skip the
+		// entire regexec() call when the query type doesn't match.
+		if(regex->ext.query_type != 0 && dns_cache != NULL &&
+		   !(regex->ext.query_type & (1 << dns_cache->query_type)))
+		{
+			log_debug(DEBUG_REGEX, "Regex %s (%u, DB ID %i) SKIPPED: \"%s\" vs. \"%s\""
+			                       " (query type mismatch)",
+			          regextype[regexid], index, regex->database_id,
+			          input, regex->string);
+			continue;
+		}
+
 		// Try to match the compiled regular expression against input
 #ifdef USE_TRE_REGEX
 		int retval = tre_regexec(&regex->regex, input, 0, match, 0);
@@ -433,18 +446,6 @@ static int match_regex(const char *input, DNSCacheData *dns_cache, const int cli
 			// Check possible additional regex settings
 			if(dns_cache != NULL)
 			{
-				// Check query type filtering
-				if(regex->ext.query_type != 0)
-				{
-					if(!(regex->ext.query_type & (1 << dns_cache->query_type)))
-					{
-						log_debug(DEBUG_REGEX, "Regex %s (%u, DB ID %i) NO match: \"%s\" vs. \"%s\""
-						                       " (skipped because of query type mismatch)",
-						          regextype[regexid], index, regex->database_id,
-						          input, regex->string);
-						continue;
-					}
-				}
 				// Set special reply type if configured for this regex
 				if(regex->ext.reply != REPLY_UNKNOWN)
 					dns_cache->force_reply = regex->ext.reply;
