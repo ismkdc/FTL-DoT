@@ -1484,12 +1484,15 @@ static bool special_domain(const queriesData *query, const char *domain)
 	// Resolvers, it SHOULD return NODATA for queries to the "resolver.arpa"
 	// zone, to provide a consistent and accurate signal to clients that it
 	// does not have a Designated Resolver.
-	if(config.dns.specialDomains.designatedResolver.v.b &&
-	   strlen(domain) > 13 && strcasecmp(&domain[strlen(domain) - 13], "resolver.arpa") == 0)
+	if(config.dns.specialDomains.designatedResolver.v.b)
 	{
-		blockingreason = "Designated Resolver domain";
-		force_next_DNS_reply = REPLY_NODATA;
-		return true;
+		const size_t len = strlen(domain);
+		if(len > 13 && strcasecmp(&domain[len - 13], "resolver.arpa") == 0)
+		{
+			blockingreason = "Designated Resolver domain";
+			force_next_DNS_reply = REPLY_NODATA;
+			return true;
+		}
 	}
 
 	return false;
@@ -2055,11 +2058,10 @@ static void FTL_forwarded(const unsigned int flags, const char *name, const unio
 		}
 	}
 
-	// Convert upstreamIP to lower case
+	// Copy upstream IP (inet_ntop already produces lowercase output)
 	char upstreamIP[INET6_ADDRSTRLEN];
 	strncpy(upstreamIP, dest, INET6_ADDRSTRLEN);
 	upstreamIP[INET6_ADDRSTRLEN - 1] = '\0';
-	strtolower(upstreamIP);
 
 	// Debug logging
 	log_debug(DEBUG_QUERIES, "**** forwarded %s to %s#%u (ID %i, %s:%i)",
@@ -3559,11 +3561,10 @@ void FTL_forwarding_retried(struct frec *forward, const int newID, const bool dn
 		}
 	}
 
-	// Convert upstream to lower case
+	// Copy upstream IP (inet_ntop already produces lowercase output)
 	char upstreamIP[INET6_ADDRSTRLEN];
 	strncpy(upstreamIP, dest, INET6_ADDRSTRLEN);
 	upstreamIP[INET6_ADDRSTRLEN - 1] = '\0';
-	strtolower(upstreamIP);
 
 	// Get upstream ID
 	const int upstreamID = findUpstreamID(upstreamIP, upstreamPort);

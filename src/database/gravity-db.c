@@ -1170,11 +1170,6 @@ static enum db_result domain_in_list(const char *domain, sqlite3_stmt *stmt, con
 	// sqlite3_bind_*() API retain their values.
 	sqlite3_reset(stmt);
 
-	// Contrary to the intuition of many, sqlite3_reset() does not reset the
-	// bindings on a prepared statement. Use this routine to reset all host
-	// parameters to NULL.
-	sqlite3_clear_bindings(stmt);
-
 	// Return if domain was found in current table
 	return (rc == SQLITE_ROW) ? FOUND : NOT_FOUND;
 }
