@@ -1918,10 +1918,10 @@ static void update_leases(struct state *state, struct dhcp_context *context, str
 	      lease_add_extradata(lease, (unsigned char *)daemon->dhcp_buff2, strlen(daemon->dhcp_buff2), 0);
 	      
 	      if (opt6_len(opt) >= 6) 
-		for (enc_opt = opt6_ptr(opt, 4); enc_opt; enc_opt = opt6_next(enc_opt, enc_end))
+		for (enc_opt = opt6_ptr(opt, 4); enc_opt; enc_opt = opt6_user_vendor_next(enc_opt, enc_end))
 		  {
 		    lease->vendorclass_count++;
-		    lease_add_extradata(lease, opt6_ptr(enc_opt, 0), opt6_len(enc_opt), 0);
+		    lease_add_extradata(lease, opt6_user_vendor_ptr(enc_opt, 0), opt6_user_vendor_len(enc_opt), 0);
 		  }
 	    }
 	  
