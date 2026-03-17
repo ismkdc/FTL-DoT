@@ -392,13 +392,26 @@ static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbu
 	      if (opt6_len(opt) < 4)
 		continue;
 	      
-	      if (vendor->enterprise != opt6_uint(opt, 0, 4))
+	      if (vendor->enterprise != 0 && vendor->enterprise != opt6_uint(opt, 0, 4))
 		continue;
-	    
+
+	      /* matching enterprise, no string match. */
+	      if (vendor->enterprise != 0 && vendor->len == 0)
+		{
+		  vendor->netid.next = state->tags;
+		  state->tags = &vendor->netid;
+		  break;
+		}
+	      
 	      offset = 4;
+
+	      /* If we're going to search the strings below, there must be at least one empty string to search
+		 I think a vendor_class option with just the enterprise number is valid. */
+	      if (opt6_len(opt) < 6)
+		continue;
 	    }
- 
-	  /* Note that format if user/vendor classes is different to DHCP options - no option types. */
+
+       	  /* Note that format if user/vendor classes is different to DHCP options - no option types. */
 	  for (enc_opt = opt6_ptr(opt, offset); enc_opt; enc_opt = opt6_user_vendor_next(enc_opt, enc_end))
 	    for (i = 0; i <= (opt6_user_vendor_len(enc_opt) - vendor->len); i++)
 	      if (memcmp(vendor->data, opt6_user_vendor_ptr(enc_opt, i), vendor->len) == 0)
