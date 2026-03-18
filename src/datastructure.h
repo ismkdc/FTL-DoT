@@ -64,6 +64,7 @@ typedef struct {
 	in_port_t port;
 	int count;
 	int failed;
+	int db_id;
 	unsigned int responses;
 	size_t ippos;
 	size_t namepos;
@@ -87,6 +88,7 @@ typedef struct {
 	int count;
 	int blockedcount;
 	int aliasclient_id; // -1 if not an alias-client
+	int db_id;
 	unsigned int id;
 	unsigned int rate_limit;
 	unsigned int numQueriesARP;
@@ -108,6 +110,7 @@ typedef struct {
 	int count;
 	int blockedcount;
 	int cname_refcount;
+	int db_id;
 	uint32_t hash;
 	size_t domainpos;
 	double lastQuery;
