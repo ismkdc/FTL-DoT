@@ -1707,7 +1707,6 @@ bool queries_to_database(void)
 {
 	int rc;
 	unsigned int added = 0, updated = 0;
-	sqlite3_int64 idx = 0;
 
 	// Only try to export to database if it is known to not be broken
 	if(FTLDBerror())
@@ -1767,23 +1766,81 @@ bool queries_to_database(void)
 		return true;
 	}
 
-	// Begin transaction
 	sqlite3 *memdb = get_memdb();
-	SQL_bool(memdb, "BEGIN TRANSACTION");
 
 	log_debug(DEBUG_DATABASE, "Upserting queries with ID in [%u, %u] in memdb", last_query, counters->queries - 1);
 
-	// Loop over recent queries and store new or changed ones in the
-	// in-memory database
+	// ===================================================================
+	// PHASE 1: Under SHM lock — handle linking table INSERTs (need SHM
+	// string access), resolve all IDs, and snapshot scalar query data into
+	// a local array.  Only linking table INSERTs and fast field copies
+	// happen here.  The heavy query_stmt REPLACE work is deferred to phase
+	// 2 which runs without the lock, reducing SHM lock hold time from
+	// O(queries × SQLite ops) to O(queries × field copy).
+	//
+	// Note: The linking table INSERTs (domain_stmt, client_stmt,
+	// forward_stmt, addinfo_stmt) intentionally remain in this locked phase
+	// even though they are SQLite operations, because they:
+	//   (a) read variable-length SHM strings (domain names, client
+	//       IPs/names, upstream addresses, CNAME domains) via getstr() and
+	//       friends — these pointers are only safe under the lock,
+	//   (b) write back db_id and in_database to SHM structs so that
+	//       subsequent queries in the same batch (and future batches) can
+	//       skip the INSERT entirely for efficiency reasons.
+	// Moving them to phase 2 would require copying every variable-length
+	// string into the snapshot, adding complexity and memory overhead for
+	// operations that are almost always skipped after the first encounter
+	// (thanks to the in_database flag).
+	// ===================================================================
+
+	// Snapshot struct for lock-free SQLite writes in phase 2
+	struct query_snap {
+		unsigned int queryID;       // SHM index for writeback
+		int64_t idx;                // pre-assigned db index
+		double timestamp;
+		int type_val;               // pre-computed type for param 3
+		int status;                 // param 4
+		int domain_db_id;           // param 5
+		int client_db_id;           // param 6
+		int upstream_db_id;         // param 7
+		int addinfo_id;             // param 8
+		int reply;                  // param 9
+		double response;            // param 10
+		int dnssec;                 // param 11
+		int list_id;                // param 12
+		int ede;                    // param 13
+		bool has_upstream;
+		bool response_calculated;
+		bool is_new;
+		bool blocked;
+	};
+
+	const unsigned int window = counters->queries - last_query;
+	struct query_snap *snaps = malloc(window * sizeof(*snaps));
+	if(snaps == NULL)
+	{
+		log_err("queries_to_database(): Failed to allocate snapshot array (%u entries)", window);
+		unlock_shm();
+		return false;
+	}
+
+	unsigned int snap_count = 0;
 	unsigned int unchanged = 0u;
+	int64_t next_maxid = memdb_queries_maxid;
+	bool phase1_error = false;
+
+	// Wrap linking table INSERTs in a transaction for efficiency (these are
+	// mostly skipped due to in_database caching)
+	SQL_bool(memdb, "BEGIN TRANSACTION");
+
 	for(unsigned int queryID = last_query; queryID < counters->queries; queryID++)
 	{
 		// Get query pointer
 		queriesData *query = getQuery(queryID, true);
 		if(query == NULL)
 		{
-			// Encountered memory error, skip query
 			log_err("Memory error in queries_to_database() when trying to access query %u", queryID);
+			phase1_error = true;
 			break;
 		}
 
@@ -1794,47 +1851,34 @@ bool queries_to_database(void)
 			continue;
 		}
 
-		// Explicitly set ID to match what is in the on-disk database
-		if(query->db > -1)
-		{
-			// We update an existing query
-			idx = query->db;
-		}
+		struct query_snap *s = &snaps[snap_count];
+		s->queryID = queryID;
+
+		// Pre-assign db index
+		s->is_new = (query->db == -1);
+		if(s->is_new)
+			s->idx = ++next_maxid;
 		else
-		{
-			// We create a new query
-			idx = memdb_queries_maxid + 1;
-		}
+			s->idx = query->db;
 
 		log_debug(DEBUG_DATABASE, "Storing query ID %u in in-memory-database with idx %lld (old idx %lld)",
-		          queryID, idx, query->db);
+		          queryID, (long long)s->idx, (long long)query->db);
 
-		// ID
-		sqlite3_bind_int64(query_stmt, 1, idx);
+		// Snapshot scalar fields
+		s->timestamp = query->timestamp;
+		s->type_val = (query->type != TYPE_OTHER) ? query->type : (query->qtype + 100);
+		s->status = query->status;
+		s->reply = query->reply;
+		s->response = query->response;
+		s->response_calculated = query->flags.response_calculated;
+		s->dnssec = query->dnssec;
+		s->ede = query->ede;
+		s->blocked = query->flags.blocked;
 
-		// TIMESTAMP
-		sqlite3_bind_double(query_stmt, 2, query->timestamp);
-
-		// TYPE
-		if(query->type != TYPE_OTHER)
-		{
-			// Store mapped type if query->type is not OTHER
-			sqlite3_bind_int(query_stmt, 3, query->type);
-		}
-		else
-		{
-			// Store query type + offset if query-> type is OTHER
-			sqlite3_bind_int(query_stmt, 3, query->qtype + 100);
-		}
-
-		// STATUS
-		sqlite3_bind_int(query_stmt, 4, query->status);
-
-		// DOMAIN
+		// DOMAIN — handle linking table INSERT if first encounter
 		const char *domain = getDomainString(query);
 		domainsData *domaindata = getDomain(query->domainID, true);
 
-		// Insert into linking table and cache the row ID on first encounter
 		if(domaindata != NULL && !domaindata->flags.in_database)
 		{
 			sqlite3_bind_text(domain_stmt, 1, domain, -1, SQLITE_STATIC);
@@ -1843,18 +1887,15 @@ bool queries_to_database(void)
 			{
 				log_err("Encountered error while trying to store domain");
 				sqlite3_reset(domain_stmt);
+				phase1_error = true;
 				break;
 			}
 			sqlite3_reset(domain_stmt);
 
-			// Cache the linking table row ID
 			if(sqlite3_changes(memdb) > 0)
-			{
 				domaindata->db_id = (int)sqlite3_last_insert_rowid(memdb);
-			}
 			else
 			{
-				// Row already existed (imported from disk), fetch its ID
 				sqlite3_bind_text(domain_id_stmt, 1, domain, -1, SQLITE_STATIC);
 				if(sqlite3_step(domain_id_stmt) == SQLITE_ROW)
 					domaindata->db_id = sqlite3_column_int(domain_id_stmt, 0);
@@ -1862,14 +1903,13 @@ bool queries_to_database(void)
 			}
 			domaindata->flags.in_database = true;
 		}
-		sqlite3_bind_int(query_stmt, 5, domaindata != NULL ? domaindata->db_id : 0);
+		s->domain_db_id = domaindata != NULL ? domaindata->db_id : 0;
 
-		// CLIENT
+		// CLIENT — handle linking table INSERT if first encounter
 		const char *clientIP = getClientIPString(query);
 		const char *clientName = getClientNameString(query);
 		clientsData *clientdata = getClient(query->clientID, true);
 
-		// Insert into linking table and cache the row ID on first encounter
 		if(clientdata != NULL && !clientdata->flags.in_database)
 		{
 			sqlite3_bind_text(client_stmt, 1, clientIP, -1, SQLITE_STATIC);
@@ -1879,17 +1919,14 @@ bool queries_to_database(void)
 			if(rc != SQLITE_DONE)
 			{
 				log_err("Encountered error while trying to store client");
+				phase1_error = true;
 				break;
 			}
 
-			// Cache the linking table row ID
 			if(sqlite3_changes(memdb) > 0)
-			{
 				clientdata->db_id = (int)sqlite3_last_insert_rowid(memdb);
-			}
 			else
 			{
-				// Row already existed (imported from disk), fetch its ID
 				sqlite3_bind_text(client_id_stmt, 1, clientIP, -1, SQLITE_STATIC);
 				sqlite3_bind_text(client_id_stmt, 2, clientName, -1, SQLITE_STATIC);
 				if(sqlite3_step(client_id_stmt) == SQLITE_ROW)
@@ -1898,16 +1935,15 @@ bool queries_to_database(void)
 			}
 			clientdata->flags.in_database = true;
 		}
-		sqlite3_bind_int(query_stmt, 6, clientdata != NULL ? clientdata->db_id : 0);
+		s->client_db_id = clientdata != NULL ? clientdata->db_id : 0;
 
-		// FORWARD
+		// FORWARD — handle linking table INSERT if first encounter
+		s->has_upstream = false;
 		if(query->upstreamID > -1)
 		{
-			// Get forward pointer
 			upstreamsData *upstream = getUpstream(query->upstreamID, true);
 			if(upstream != NULL)
 			{
-				// Insert into linking table and cache the row ID on first encounter
 				if(!upstream->flags.in_database)
 				{
 					const char *forwardIP = getstr(upstream->ippos);
@@ -1921,17 +1957,14 @@ bool queries_to_database(void)
 						if(rc != SQLITE_DONE)
 						{
 							log_err("Encountered error while trying to store forward");
+							phase1_error = true;
 							break;
 						}
 
-						// Cache the linking table row ID
 						if(sqlite3_changes(memdb) > 0)
-						{
 							upstream->db_id = (int)sqlite3_last_insert_rowid(memdb);
-						}
 						else
 						{
-							// Row already existed (imported from disk), fetch its ID
 							sqlite3_bind_text(forward_id_stmt, 1, buffer, len, SQLITE_STATIC);
 							if(sqlite3_step(forward_id_stmt) == SQLITE_ROW)
 								upstream->db_id = sqlite3_column_int(forward_id_stmt, 0);
@@ -1940,35 +1973,20 @@ bool queries_to_database(void)
 					}
 					upstream->flags.in_database = true;
 				}
-				sqlite3_bind_int(query_stmt, 7, upstream->db_id);
-			}
-			else
-			{
-				sqlite3_bind_null(query_stmt, 7);
+				s->upstream_db_id = upstream->db_id;
+				s->has_upstream = true;
 			}
 		}
-		else
-		{
-			// No forward destination
-			sqlite3_bind_null(query_stmt, 7);
-		}
 
-		// Get cache entry for this query
-		const unsigned int cacheID = query->cacheID > -1 ? query->cacheID : findCacheID(query->domainID, query->clientID, query->type, false);
-		DNSCacheData *cache = getDNSCache(cacheID, true);
-
-		// ADDITIONAL_INFO
-		// Cache addinfo_by_id row IDs in a process-local hash table
-		// keyed by (type, CNAME_domainID or list_id) to avoid repeated
-		// INSERT OR IGNORE + SELECT operations
+		// ADDINFO — handle linking table INSERT if not cached
+		s->addinfo_id = 0;
 		if(query->status == QUERY_GRAVITY_CNAME ||
 		   query->status == QUERY_REGEX_CNAME ||
 		   query->status == QUERY_DENYLIST_CNAME)
 		{
-			// Save domain blocked during deep CNAME inspection
 			const int cname_domainID = query->CNAME_domainID;
-			int addinfo_id = lookup_addinfo_id(ADDINFO_CNAME_DOMAIN, cname_domainID);
-			if(addinfo_id == 0)
+			int aid = lookup_addinfo_id(ADDINFO_CNAME_DOMAIN, cname_domainID);
+			if(aid == 0)
 			{
 				const char *cname = getCNAMEDomainString(query);
 				const int len = strlen(cname);
@@ -1979,121 +1997,199 @@ bool queries_to_database(void)
 				if(rc != SQLITE_DONE)
 				{
 					log_err("Encountered error while trying to store addinfo");
+					phase1_error = true;
 					break;
 				}
 
 				if(sqlite3_changes(memdb) > 0)
-				{
-					addinfo_id = (int)sqlite3_last_insert_rowid(memdb);
-				}
+					aid = (int)sqlite3_last_insert_rowid(memdb);
 				else
 				{
 					sqlite3_bind_int(addinfo_id_stmt, 1, ADDINFO_CNAME_DOMAIN);
 					sqlite3_bind_text(addinfo_id_stmt, 2, cname, len, SQLITE_STATIC);
 					if(sqlite3_step(addinfo_id_stmt) == SQLITE_ROW)
-						addinfo_id = sqlite3_column_int(addinfo_id_stmt, 0);
+						aid = sqlite3_column_int(addinfo_id_stmt, 0);
 					sqlite3_reset(addinfo_id_stmt);
 				}
-				store_addinfo_id(ADDINFO_CNAME_DOMAIN, cname_domainID, addinfo_id);
+				store_addinfo_id(ADDINFO_CNAME_DOMAIN, cname_domainID, aid);
 			}
-			sqlite3_bind_int(query_stmt, 8, addinfo_id);
+			s->addinfo_id = aid;
 		}
-		else if(cache != NULL && cache->list_id != -1)
+		else
 		{
-			// Restore regex/list ID if applicable
-			const int list_id = cache->list_id;
-			int addinfo_id = lookup_addinfo_id(ADDINFO_LIST_ID, list_id);
-			if(addinfo_id == 0)
+			// Resolve list_id from DNS cache (needs SHM access)
+			const unsigned int cacheID = query->cacheID > -1
+				? query->cacheID
+				: findCacheID(query->domainID, query->clientID, query->type, false);
+			DNSCacheData *cache = getDNSCache(cacheID, true);
+
+			if(cache != NULL && cache->list_id != -1)
 			{
-				sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_LIST_ID);
-				sqlite3_bind_int(addinfo_stmt, 2, list_id);
-				rc = sqlite3_step(addinfo_stmt);
-				sqlite3_reset(addinfo_stmt);
-				if(rc != SQLITE_DONE)
+				const int list_id = cache->list_id;
+				int aid = lookup_addinfo_id(ADDINFO_LIST_ID, list_id);
+				if(aid == 0)
 				{
-					log_err("Encountered error while trying to store addinfo");
-					break;
-				}
+					sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_LIST_ID);
+					sqlite3_bind_int(addinfo_stmt, 2, list_id);
+					rc = sqlite3_step(addinfo_stmt);
+					sqlite3_reset(addinfo_stmt);
+					if(rc != SQLITE_DONE)
+					{
+						log_err("Encountered error while trying to store addinfo");
+						phase1_error = true;
+						break;
+					}
 
-				if(sqlite3_changes(memdb) > 0)
-				{
-					addinfo_id = (int)sqlite3_last_insert_rowid(memdb);
+					if(sqlite3_changes(memdb) > 0)
+						aid = (int)sqlite3_last_insert_rowid(memdb);
+					else
+					{
+						sqlite3_bind_int(addinfo_id_stmt, 1, ADDINFO_LIST_ID);
+						sqlite3_bind_int(addinfo_id_stmt, 2, list_id);
+						if(sqlite3_step(addinfo_id_stmt) == SQLITE_ROW)
+							aid = sqlite3_column_int(addinfo_id_stmt, 0);
+						sqlite3_reset(addinfo_id_stmt);
+					}
+					store_addinfo_id(ADDINFO_LIST_ID, list_id, aid);
 				}
-				else
-				{
-					sqlite3_bind_int(addinfo_id_stmt, 1, ADDINFO_LIST_ID);
-					sqlite3_bind_int(addinfo_id_stmt, 2, list_id);
-					if(sqlite3_step(addinfo_id_stmt) == SQLITE_ROW)
-						addinfo_id = sqlite3_column_int(addinfo_id_stmt, 0);
-					sqlite3_reset(addinfo_id_stmt);
-				}
-				store_addinfo_id(ADDINFO_LIST_ID, list_id, addinfo_id);
+				s->addinfo_id = aid;
+				s->list_id = list_id;
 			}
-			sqlite3_bind_int(query_stmt, 8, addinfo_id);
+			else
+			{
+				s->list_id = -1;
+			}
 		}
-		else
+
+		// For CNAME-blocked queries, list_id comes from the DNS cache too
+		if(s->addinfo_id > 0 && (query->status == QUERY_GRAVITY_CNAME ||
+		   query->status == QUERY_REGEX_CNAME ||
+		   query->status == QUERY_DENYLIST_CNAME))
 		{
-			// Nothing to add here
-			sqlite3_bind_null(query_stmt, 8);
+			const unsigned int cacheID = query->cacheID > -1
+				? query->cacheID
+				: findCacheID(query->domainID, query->clientID, query->type, false);
+			DNSCacheData *cache = getDNSCache(cacheID, true);
+			s->list_id = (cache != NULL && cache->list_id != -1) ? cache->list_id : -1;
 		}
 
-		// REPLY_TYPE
-		sqlite3_bind_int(query_stmt, 9, query->reply);
+		// Clear changed flag now (under lock) so that if the DNS thread
+		// updates the query during phase 2 and sets changed back to
+		// true, we will later be able to update this query.
+		query->flags.database.changed = false;
 
-		// REPLY_TIME
-		if(query->flags.response_calculated)
-			// Store difference (in seconds) when applicable
-			sqlite3_bind_double(query_stmt, 10, query->response);
+		snap_count++;
+	}
+
+	// Commit linking table transaction
+	SQL_bool(memdb, "END");
+
+	// Release SHM lock — all data needed for phase 2 is in the snapshot
+	unlock_shm();
+
+	// If phase 1 encountered an error, skip phase 2 but still clean up
+	if(phase1_error)
+	{
+		free(snaps);
+		return false;
+	}
+
+	// ===================================================================
+	// PHASE 2: Without SHM lock — bind and step query_stmt for each
+	// snapshot. This is the bulk of the SQLite work and no longer blocks
+	// the DNS processing or API threads.
+	// ===================================================================
+
+	SQL_bool(memdb, "BEGIN TRANSACTION");
+
+	unsigned int succeeded = 0;
+	for(unsigned int i = 0; i < snap_count; i++)
+	{
+		const struct query_snap *s = &snaps[i];
+
+		sqlite3_bind_int64(query_stmt, 1, s->idx);
+		sqlite3_bind_double(query_stmt, 2, s->timestamp);
+		sqlite3_bind_int(query_stmt, 3, s->type_val);
+		sqlite3_bind_int(query_stmt, 4, s->status);
+		sqlite3_bind_int(query_stmt, 5, s->domain_db_id);
+		sqlite3_bind_int(query_stmt, 6, s->client_db_id);
+
+		if(s->has_upstream)
+			sqlite3_bind_int(query_stmt, 7, s->upstream_db_id);
 		else
-			// Store NULL otherwise
+			sqlite3_bind_null(query_stmt, 7);
+
+		if(s->addinfo_id > 0)
+			sqlite3_bind_int(query_stmt, 8, s->addinfo_id);
+		else
+			sqlite3_bind_null(query_stmt, 8);
+
+		sqlite3_bind_int(query_stmt, 9, s->reply);
+
+		if(s->response_calculated)
+			sqlite3_bind_double(query_stmt, 10, s->response);
+		else
 			sqlite3_bind_null(query_stmt, 10);
 
-		// DNSSEC
-		sqlite3_bind_int(query_stmt, 11, query->dnssec);
+		sqlite3_bind_int(query_stmt, 11, s->dnssec);
 
-		// LIST_ID
-		if(cache != NULL && cache->list_id != -1)
-			sqlite3_bind_int(query_stmt, 12, cache->list_id);
+		if(s->list_id != -1)
+			sqlite3_bind_int(query_stmt, 12, s->list_id);
 		else
-			// Not applicable, setting NULL
 			sqlite3_bind_null(query_stmt, 12);
 
-		// EDE
-		sqlite3_bind_int(query_stmt, 13, query->ede);
+		sqlite3_bind_int(query_stmt, 13, s->ede);
 
-		// Step and check if successful
 		rc = sqlite3_step(query_stmt);
 		sqlite3_reset(query_stmt);
 
-		if( rc != SQLITE_DONE )
+		if(rc != SQLITE_DONE)
 		{
 			log_err("Encountered error while trying to store queries in query_storage: %s", sqlite3_errstr(rc));
 			break;
 		}
 
-		// Update fields if this is a new query (skip if we are only updating an
-		// existing entry)
-		if(query->db == -1)
+		succeeded++;
+	}
+
+	SQL_bool(memdb, "END");
+
+	// ===================================================================
+	// PHASE 3: Brief SHM lock — write back db indices and clear changed
+	// flags only for queries that were successfully committed.
+	// ===================================================================
+	lock_shm();
+
+	// Loop through snapshots of successfully committed queries and write
+	// back db indices
+	for(unsigned int i = 0; i < succeeded; i++)
+	{
+		const struct query_snap *s = &snaps[i];
+		queriesData *query = getQuery(s->queryID, true);
+		if(query == NULL)
+			continue;
+
+		if(s->is_new)
 		{
-			// Store database index for this query (in case we need to
-			// update it later on)
-			query->db = ++memdb_queries_maxid;
-
-			// Total counter information (delta computation)
-			if(query->flags.blocked)
+			query->db = s->idx;
+			if(s->blocked)
 				new_blocked++;
-
-			// Update lasttimestamp variable with timestamp of the latest stored query
-			if(query->timestamp > new_last_timestamp)
-				new_last_timestamp = query->timestamp;
-
+			if(s->timestamp > new_last_timestamp)
+				new_last_timestamp = s->timestamp;
 			added++;
 		}
 		else
 			updated++;
+	}
 
-		// Memorize query as updated in the database
-		query->flags.database.changed = false;
+	// Update memdb_queries_maxid to reflect all committed new entries
+	if(added > 0)
+	{
+		int64_t committed_maxid = memdb_queries_maxid;
+		for(unsigned int i = 0; i < succeeded; i++)
+			if(snaps[i].is_new && snaps[i].idx > committed_maxid)
+				committed_maxid = snaps[i].idx;
+		memdb_queries_maxid = committed_maxid;
 	}
 
 	// Update number of queries in in-memory database and memorize how many
@@ -2101,17 +2197,16 @@ bool queries_to_database(void)
 	memdb_queries_count += added;
 	new_total += added;
 
-	// Release shared memory before committing transaction
 	unlock_shm();
+
+	// Free snapshot array
+	free(snaps);
 
 	if(config.debug.database.v.b)
 	{
 		log_debug(DEBUG_DATABASE, "In-memory database: Inserted %u, updated %u, skipped %u queries", added, updated, unchanged);
 		log_in_memory_usage();
 	}
-
-	// End transaction
-	SQL_bool(memdb, "END");
 
 	return true;
 }
