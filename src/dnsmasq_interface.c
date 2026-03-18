@@ -1770,7 +1770,7 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 	// Check blacklist (exact + regex) and gravity for _esni.domain if enabled
 	// (defaulting to true)
 	if(config.dns.blockESNI.v.b &&
-	   !query->flags.allowed && blockDomain == NOT_FOUND &&
+	   !query->flags.allowed && !blockDomain &&
 	   strlen(domain_lower) > 6 && strncasecmp(domain_lower, "_esni.", 6u) == 0)
 	{
 		TIMED_DB_OP_RESULT(blockDomain, check_domain_blocked(domain_lower + 6u, client, query, dns_cache, &new_status, &db_okay));
