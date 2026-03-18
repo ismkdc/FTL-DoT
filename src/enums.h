@@ -289,7 +289,8 @@ enum ptr_type {
 
 enum addinfo_type {
 	ADDINFO_CNAME_DOMAIN = 1,
-	ADDINFO_LIST_ID
+	ADDINFO_LIST_ID,
+	ADDINFO_TYPE_MAX
 } __attribute__ ((packed));
 
 enum listening_mode {

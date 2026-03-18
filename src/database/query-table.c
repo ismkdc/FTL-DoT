@@ -42,6 +42,7 @@ static sqlite3_stmt *addinfo_stmt = NULL;
 static sqlite3_stmt *domain_id_stmt = NULL;
 static sqlite3_stmt *client_id_stmt = NULL;
 static sqlite3_stmt *forward_id_stmt = NULL;
+static sqlite3_stmt *addinfo_id_stmt = NULL;
 static sqlite3_stmt *queries_to_disk_stmt = NULL;
 #define SUBTABLE_STMTS 5
 static sqlite3_stmt *subtables_to_disk_stmts[SUBTABLE_STMTS] = { NULL };
@@ -54,12 +55,84 @@ static sqlite3_stmt **stmts[] = { &query_stmt,
                                   &domain_id_stmt,
                                   &client_id_stmt,
                                   &forward_id_stmt,
+                                  &addinfo_id_stmt,
                                   &queries_to_disk_stmt,
                                   &subtables_to_disk_stmts[0],
                                   &subtables_to_disk_stmts[1],
                                   &subtables_to_disk_stmts[2],
                                   &subtables_to_disk_stmts[3],
                                   &subtables_to_disk_stmts[4] };
+
+// Process-local cache for addinfo_by_id row IDs.
+// The type is packed into the low bits of a combined key, with the actual key
+// value (CNAME_domainID or list_id) shifted above it. db_id == 0 means the slot
+// is empty.  1024 slots (8 KB at 8 bytes/slot) keeps the table under 75% load
+// even for users with hundreds of regex rules plus CNAME-blocked domains.
+// If it ever overflows (>8 probe collisions in store_addinfo_id), the store
+// silently gives up and the next lookup returns 0, falling through to the
+// original INSERT OR IGNORE + SELECT path — so it degrades gracefully with no
+// correctness impact.
+#define ADDINFO_CACHE_SLOTS 1024
+
+// Derive the number of bits needed to represent all addinfo_type values at
+// compile time from the ADDINFO_TYPE_MAX sentinel
+#define ADDINFO_TYPE_BITS \
+	(ADDINFO_TYPE_MAX <= 2 ? 1 : ADDINFO_TYPE_MAX <= 4 ? 2 : \
+	 ADDINFO_TYPE_MAX <= 8 ? 3 : 4)
+
+// Knuth multiplicative hash constant (golden ratio derived):
+// floor(2^32 / phi), where phi = (1+sqrt(5))/2.
+// Multiplying a key by this and masking to the table size spreads consecutive
+// packed keys (which are dense small integers) across all slots.  Without this,
+// masking a small integer directly would cluster entries in the first few
+// buckets of the power-of-two table.
+#define KNUTH_PHI32 2654435761u
+
+// Cache for addinfo_by_id lookups to speed up repeated lookups of the same ID
+// (e.g., for frequently queried CNAME domains or lists). The cache is a simple
+// open-addressing hash table with linear probing.
+static struct {
+	int key;   // packed type and key (CNAME_domainID or list_id)
+	int db_id; // corresponding addinfo_by_id row ID in the database; 0 if the slot is empty
+} addinfo_id_cache[ADDINFO_CACHE_SLOTS] = {{0}};
+
+// Pack addinfo type and key into a single integer
+static inline int addinfo_pack(const int type, const int key)
+{
+	return (key << ADDINFO_TYPE_BITS) | (type & ((1 << ADDINFO_TYPE_BITS) - 1));
+}
+
+static inline int lookup_addinfo_id(const int type, const int key)
+{
+	const int packed = addinfo_pack(type, key);
+	unsigned int slot = ((unsigned int)packed * KNUTH_PHI32) & (ADDINFO_CACHE_SLOTS - 1);
+	for(int i = 0; i < 8; i++)
+	{
+		if(addinfo_id_cache[slot].db_id == 0)
+			return 0;
+		if(addinfo_id_cache[slot].key == packed)
+			return addinfo_id_cache[slot].db_id;
+		slot = (slot + 1) & (ADDINFO_CACHE_SLOTS - 1);
+	}
+	return 0;
+}
+
+static inline void store_addinfo_id(const int type, const int key, const int db_id)
+{
+	const int packed = addinfo_pack(type, key);
+	unsigned int slot = ((unsigned int)packed * KNUTH_PHI32) & (ADDINFO_CACHE_SLOTS - 1);
+	for(int i = 0; i < 8; i++)
+	{
+		if(addinfo_id_cache[slot].db_id == 0 ||
+		   addinfo_id_cache[slot].key == packed)
+		{
+			addinfo_id_cache[slot].key = packed;
+			addinfo_id_cache[slot].db_id = db_id;
+			return;
+		}
+		slot = (slot + 1) & (ADDINFO_CACHE_SLOTS - 1);
+	}
+}
 
 // Private prototypes
 static bool count_queries_on_disk(sqlite3 *memdb);
@@ -209,23 +282,10 @@ bool init_memory_database(void)
 	}
 
 	// Prepare persistent insertion/replace statements
-	// Domain, client, and forward IDs are cached on the SHM structs
-	// and bound as integers directly, eliminating 3 subqueries per INSERT.
-	// Only addinfo still uses a subquery (it only fires for blocked/CNAME queries).
+	// Domain, client, forward, and addinfo IDs are cached
 	rc = sqlite3_prepare_v3(_memdb, "REPLACE INTO query_storage VALUES "\
-	                                "(?1," \
-	                                 "?2," \
-	                                 "?3," \
-	                                 "?4," \
-	                                 "?5," \
-	                                 "?6," \
-	                                 "?7," \
-	                                 "(SELECT id FROM addinfo_by_id WHERE type = ?8 AND content = ?9),"
-	                                 "?10," \
-	                                 "?11," \
-	                                 "?12," \
-	                                 "?13,"
-	                                 "?14)", -1, SQLITE_PREPARE_PERSISTENT, &query_stmt, NULL);
+	                                "(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+	                        -1, SQLITE_PREPARE_PERSISTENT, &query_stmt, NULL);
 	if( rc != SQLITE_OK )
 	{
 		log_err("init_memory_database(query_storage) - SQL error step: %s", sqlite3_errstr(rc));
@@ -289,6 +349,17 @@ bool init_memory_database(void)
 		log_err("init_memory_database(forward_id) - SQL error prepare: %s", sqlite3_errstr(rc));
 		return false;
 	}
+
+	rc = sqlite3_prepare_v3(_memdb, "SELECT id FROM addinfo_by_id WHERE type = ? AND content = ?",
+	                        -1, SQLITE_PREPARE_PERSISTENT, &addinfo_id_stmt, NULL);
+	if( rc != SQLITE_OK )
+	{
+		log_err("init_memory_database(addinfo_id) - SQL error prepare: %s", sqlite3_errstr(rc));
+		return false;
+	}
+
+	// Clear process-local addinfo ID cache
+	memset(addinfo_id_cache, 0, sizeof(addinfo_id_cache));
 
 	// The IFNULL() is needed to handle the case when there are no queries
 	// in the on-disk database yet. In this case, we want to copy all
@@ -1887,74 +1958,108 @@ bool queries_to_database(void)
 		DNSCacheData *cache = getDNSCache(cacheID, true);
 
 		// ADDITIONAL_INFO
+		// Cache addinfo_by_id row IDs in a process-local hash table
+		// keyed by (type, CNAME_domainID or list_id) to avoid repeated
+		// INSERT OR IGNORE + SELECT operations
 		if(query->status == QUERY_GRAVITY_CNAME ||
 		   query->status == QUERY_REGEX_CNAME ||
 		   query->status == QUERY_DENYLIST_CNAME)
 		{
 			// Save domain blocked during deep CNAME inspection
-			const char *cname = getCNAMEDomainString(query);
-			const int len = strlen(cname);
-			sqlite3_bind_int(query_stmt, 8, ADDINFO_CNAME_DOMAIN);
-			sqlite3_bind_text(query_stmt, 9, cname, len, SQLITE_STATIC);
-
-			// Execute prepared addinfo statement and check if successful
-			sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_CNAME_DOMAIN);
-			sqlite3_bind_text(addinfo_stmt, 2, cname, len, SQLITE_STATIC);
-			rc = sqlite3_step(addinfo_stmt);
-			sqlite3_reset(addinfo_stmt);
-			if(rc != SQLITE_DONE)
+			const int cname_domainID = query->CNAME_domainID;
+			int addinfo_id = lookup_addinfo_id(ADDINFO_CNAME_DOMAIN, cname_domainID);
+			if(addinfo_id == 0)
 			{
-				log_err("Encountered error while trying to store addinfo");
-				break;
+				const char *cname = getCNAMEDomainString(query);
+				const int len = strlen(cname);
+				sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_CNAME_DOMAIN);
+				sqlite3_bind_text(addinfo_stmt, 2, cname, len, SQLITE_STATIC);
+				rc = sqlite3_step(addinfo_stmt);
+				sqlite3_reset(addinfo_stmt);
+				if(rc != SQLITE_DONE)
+				{
+					log_err("Encountered error while trying to store addinfo");
+					break;
+				}
+
+				if(sqlite3_changes(memdb) > 0)
+				{
+					addinfo_id = (int)sqlite3_last_insert_rowid(memdb);
+				}
+				else
+				{
+					sqlite3_bind_int(addinfo_id_stmt, 1, ADDINFO_CNAME_DOMAIN);
+					sqlite3_bind_text(addinfo_id_stmt, 2, cname, len, SQLITE_STATIC);
+					if(sqlite3_step(addinfo_id_stmt) == SQLITE_ROW)
+						addinfo_id = sqlite3_column_int(addinfo_id_stmt, 0);
+					sqlite3_reset(addinfo_id_stmt);
+				}
+				store_addinfo_id(ADDINFO_CNAME_DOMAIN, cname_domainID, addinfo_id);
 			}
+			sqlite3_bind_int(query_stmt, 8, addinfo_id);
 		}
 		else if(cache != NULL && cache->list_id != -1)
 		{
-			// Restore regex ID if applicable
-			sqlite3_bind_int(query_stmt, 8, ADDINFO_LIST_ID);
-			sqlite3_bind_int(query_stmt, 9, cache->list_id);
-
-			// Execute prepared addinfo statement and check if successful
-			sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_LIST_ID);
-			sqlite3_bind_int(addinfo_stmt, 2, cache->list_id);
-			rc = sqlite3_step(addinfo_stmt);
-			sqlite3_reset(addinfo_stmt);
-			if(rc != SQLITE_DONE)
+			// Restore regex/list ID if applicable
+			const int list_id = cache->list_id;
+			int addinfo_id = lookup_addinfo_id(ADDINFO_LIST_ID, list_id);
+			if(addinfo_id == 0)
 			{
-				log_err("Encountered error while trying to store addinfo");
-				break;
+				sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_LIST_ID);
+				sqlite3_bind_int(addinfo_stmt, 2, list_id);
+				rc = sqlite3_step(addinfo_stmt);
+				sqlite3_reset(addinfo_stmt);
+				if(rc != SQLITE_DONE)
+				{
+					log_err("Encountered error while trying to store addinfo");
+					break;
+				}
+
+				if(sqlite3_changes(memdb) > 0)
+				{
+					addinfo_id = (int)sqlite3_last_insert_rowid(memdb);
+				}
+				else
+				{
+					sqlite3_bind_int(addinfo_id_stmt, 1, ADDINFO_LIST_ID);
+					sqlite3_bind_int(addinfo_id_stmt, 2, list_id);
+					if(sqlite3_step(addinfo_id_stmt) == SQLITE_ROW)
+						addinfo_id = sqlite3_column_int(addinfo_id_stmt, 0);
+					sqlite3_reset(addinfo_id_stmt);
+				}
+				store_addinfo_id(ADDINFO_LIST_ID, list_id, addinfo_id);
 			}
+			sqlite3_bind_int(query_stmt, 8, addinfo_id);
 		}
 		else
 		{
 			// Nothing to add here
 			sqlite3_bind_null(query_stmt, 8);
-			sqlite3_bind_null(query_stmt, 9);
 		}
 
 		// REPLY_TYPE
-		sqlite3_bind_int(query_stmt, 10, query->reply);
+		sqlite3_bind_int(query_stmt, 9, query->reply);
 
 		// REPLY_TIME
 		if(query->flags.response_calculated)
 			// Store difference (in seconds) when applicable
-			sqlite3_bind_double(query_stmt, 11, query->response);
+			sqlite3_bind_double(query_stmt, 10, query->response);
 		else
 			// Store NULL otherwise
-			sqlite3_bind_null(query_stmt, 11);
+			sqlite3_bind_null(query_stmt, 10);
 
 		// DNSSEC
-		sqlite3_bind_int(query_stmt, 12, query->dnssec);
+		sqlite3_bind_int(query_stmt, 11, query->dnssec);
 
 		// LIST_ID
 		if(cache != NULL && cache->list_id != -1)
-			sqlite3_bind_int(query_stmt, 13, cache->list_id);
+			sqlite3_bind_int(query_stmt, 12, cache->list_id);
 		else
 			// Not applicable, setting NULL
-			sqlite3_bind_null(query_stmt, 13);
+			sqlite3_bind_null(query_stmt, 12);
 
 		// EDE
-		sqlite3_bind_int(query_stmt, 14, query->ede);
+		sqlite3_bind_int(query_stmt, 13, query->ede);
 
 		// Step and check if successful
 		rc = sqlite3_step(query_stmt);
