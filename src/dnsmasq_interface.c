@@ -1438,6 +1438,9 @@ static bool check_domain_blocked(const char *domain,
 // Special domain checking
 static bool special_domain(const queriesData *query, const char *domain)
 {
+	// domain is already lowercase at this point, so we can do
+	// case-sensitive comparisons in here
+
 	// Mozilla canary domain
 	// Network administrators may configure their networks as follows to signal
 	// that their local DNS resolver implemented special features that make the
@@ -1448,7 +1451,7 @@ static bool special_domain(const queriesData *query, const char *domain)
 	// respond with NOERROR, but return no A or AAAA records.
 	// https://support.mozilla.org/en-US/kb/configuring-networks-disable-dns-over-https
 	if(config.dns.specialDomains.mozillaCanary.v.b &&
-	   strcasecmp(domain, "use-application-dns.net") == 0 &&
+	   strcmp(domain, "use-application-dns.net") == 0 &&
 	   (query->type == TYPE_A || query->type == TYPE_AAAA))
 	{
 		blockingreason = "Mozilla canary domain";
@@ -1472,8 +1475,8 @@ static bool special_domain(const queriesData *query, const char *domain)
 	// > mask-h2.icloud.com
 	// https://developer.apple.com/support/prepare-your-network-for-icloud-private-relay
 	if(config.dns.specialDomains.iCloudPrivateRelay.v.b &&
-	   (strcasecmp(domain, "mask.icloud.com") == 0 ||
-	    strcasecmp(domain, "mask-h2.icloud.com") == 0))
+	   (strcmp(domain, "mask.icloud.com") == 0 ||
+	    strcmp(domain, "mask-h2.icloud.com") == 0))
 	{
 		blockingreason = "Apple iCloud Private Relay domain";
 		force_next_DNS_reply = REPLY_NXDOMAIN;
@@ -1502,7 +1505,7 @@ static bool special_domain(const queriesData *query, const char *domain)
 	if(config.dns.specialDomains.designatedResolver.v.b)
 	{
 		const size_t len = strlen(domain);
-		if(len > 13 && strcasecmp(&domain[len - 13], "resolver.arpa") == 0)
+		if(len > 13 && strcmp(&domain[len - 13], "resolver.arpa") == 0)
 		{
 			blockingreason = "Designated Resolver domain";
 			force_next_DNS_reply = REPLY_NODATA;
@@ -1789,7 +1792,7 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 	// (defaulting to true)
 	if(config.dns.blockESNI.v.b &&
 	   !query->flags.allowed && !blockDomain &&
-	   strlen(domain_lower) > 6 && strncasecmp(domain_lower, "_esni.", 6u) == 0)
+	   strlen(domain_lower) > 6 && strncmp(domain_lower, "_esni.", 6u) == 0)
 	{
 		TIMED_DB_OP_RESULT(blockDomain, check_domain_blocked(domain_lower + 6u, client, query, dns_cache, &new_status, &db_okay));
 
@@ -2069,14 +2072,9 @@ static void FTL_forwarded(const unsigned int flags, const char *name, const unio
 		}
 	}
 
-	// Copy upstream IP (inet_ntop already produces lowercase output)
-	char upstreamIP[INET6_ADDRSTRLEN];
-	strncpy(upstreamIP, dest, INET6_ADDRSTRLEN);
-	upstreamIP[INET6_ADDRSTRLEN - 1] = '\0';
-
 	// Debug logging
 	log_debug(DEBUG_QUERIES, "**** forwarded %s to %s#%u (ID %i, %s:%i)",
-	          name, upstreamIP, upstreamPort, id, file, line);
+	          name, dest, upstreamPort, id, file, line);
 
 	// Save status and upstreamID in corresponding query identified by dnsmasq's ID
 	const int queryID = findQueryID(id);
@@ -2109,7 +2107,7 @@ static void FTL_forwarded(const unsigned int flags, const char *name, const unio
 
 	// Get ID of upstream destination, create new upstream record
 	// if not found in current data structure
-	const unsigned int upstreamID = findUpstreamID(upstreamIP, upstreamPort);
+	const unsigned int upstreamID = findUpstreamID(dest, upstreamPort);
 	query->upstreamID = upstreamID;
 
 	upstreamsData *upstream = getUpstream(upstreamID, true);
@@ -3572,18 +3570,13 @@ void FTL_forwarding_retried(struct frec *forward, const int newID, const bool dn
 		}
 	}
 
-	// Copy upstream IP (inet_ntop already produces lowercase output)
-	char upstreamIP[INET6_ADDRSTRLEN];
-	strncpy(upstreamIP, dest, INET6_ADDRSTRLEN);
-	upstreamIP[INET6_ADDRSTRLEN - 1] = '\0';
-
-	// Get upstream ID
-	const int upstreamID = findUpstreamID(upstreamIP, upstreamPort);
+	// Get upstream ID (dest is already NUL-terminated by inet_ntop)
+	const int upstreamID = findUpstreamID(dest, upstreamPort);
 
 	// Possible debugging information
 	log_debug(DEBUG_QUERIES, "**** RETRIED%s query %i as %i to %s#%d",
 	          dnssec ? " DNSSEC" : "", oldID, newID,
-	          upstreamIP, upstreamPort);
+	          dest, upstreamPort);
 
 	// Get upstream pointer
 	upstreamsData *upstream = getUpstream(upstreamID, true);
