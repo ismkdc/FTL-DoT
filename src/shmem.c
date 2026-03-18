@@ -1288,6 +1288,24 @@ bool get_per_client_regex(const unsigned int clientID, const unsigned int regexI
 	return ((bool*) shm_per_client_regex.ptr)[id];
 }
 
+// Returns a pointer to the start of clientID's row in the per-client regex
+// bool array, performing the offset arithmetic and bounds check once.
+// Use this before a per-client regex loop to avoid recomputing the row
+// offset on every iteration. Returns NULL on out-of-bounds.
+const bool *get_client_regex_row(const unsigned int clientID)
+{
+	const unsigned int num_regex_tot = get_num_regex(REGEX_MAX);
+	const unsigned int base = clientID * num_regex_tot;
+	const size_t maxval = shm_per_client_regex.size / sizeof(bool);
+	if(base >= maxval)
+	{
+		log_err("get_client_regex_row(%u): base offset %u out of bounds (max %zu)",
+		        clientID, base, maxval);
+		return NULL;
+	}
+	return ((const bool*) shm_per_client_regex.ptr) + base;
+}
+
 void set_per_client_regex(const unsigned int clientID, const unsigned int regexID, const bool value)
 {
 	const unsigned int num_regex_tot = get_num_regex(REGEX_MAX); // total number

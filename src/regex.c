@@ -384,6 +384,11 @@ static int match_regex(const char *input, DNSCacheData *dns_cache, const int cli
 		read_regex_from_database();
 	}
 
+	// Pre-compute pointer to this client's per-regex enabled row.
+	// Avoids repeating the row-offset multiply and bounds check on every
+	// iteration. clientID == -1 means "check all regex" (testing mode).
+	const bool *client_regex_row = (clientID >= 0) ? get_client_regex_row((unsigned int)clientID) : NULL;
+
 	// Loop over all configured regex filters of this type
 	for(unsigned int index = 0; index < num_regex[regexid]; index++)
 	{
@@ -405,7 +410,7 @@ static int match_regex(const char *input, DNSCacheData *dns_cache, const int cli
 
 		// Only use regular expressions enabled for this client
 		// We allow clientID = -1 to get all regex (for testing)
-		if(clientID >= 0 && !get_per_client_regex(clientID, regexID))
+		if(client_regex_row != NULL && !client_regex_row[regexID])
 		{
 			if(config.debug.regex.v.b)
 			{
