@@ -982,20 +982,41 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// (e.g., when retrying a query using TCP after UDP truncation)
 	if(!internal_query && client->hwlen < 1 && daemon->netlinkfd > 0)
 	{
-		client->hwlen = find_mac(addr, client->hwaddr, 1, time(NULL));
+		// find_mac() may trigger a netlink kernel call
+		// (iface_enumerate) to refresh the ARP table on a cache miss.
+		// Release the SHM lock so this potentially slow I/O doesn't
+		// block all other threads (API, database, GC, TCP workers).
+		unlock_shm();
+
+		unsigned char hwaddr[16];
+		const int hwlen = find_mac(addr, hwaddr, 1, time(NULL));
+
+		// Reacquire lock and re-fetch client pointer (SHM may have
+		// been remapped while we were unlocked)
+		lock_shm();
+		client = getClient(clientID, true);
+		if(client != NULL)
+		{
+			memcpy(client->hwaddr, hwaddr, sizeof(hwaddr));
+			client->hwlen = hwlen;
+		}
+
+		// Re-fetch query pointer as SHM may have been remapped
+		query = getQuery(queryID, true);
+
 		if(config.debug.arp.v.b)
 		{
-			if(client->hwlen == 6)
+			if(hwlen == 6)
 			{
 				log_debug(DEBUG_ARP, "find_mac(\"%s\") returned hardware address "
 				          "%02X:%02X:%02X:%02X:%02X:%02X", clientIP,
-				          client->hwaddr[0], client->hwaddr[1], client->hwaddr[2],
-				          client->hwaddr[3], client->hwaddr[4], client->hwaddr[5]);
+				          hwaddr[0], hwaddr[1], hwaddr[2],
+				          hwaddr[3], hwaddr[4], hwaddr[5]);
 			}
 			else
 			{
 				log_debug(DEBUG_ARP, "find_mac(\"%s\") returned %i bytes of data",
-				          clientIP, client->hwlen);
+				          clientIP, hwlen);
 			}
 		}
 	}
