@@ -1714,7 +1714,7 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 			// Known as upstream blocked, we return this result
 			// early, skipping all the lengthy tests below
 			log_debug(DEBUG_QUERIES, "%s is known as %s (expires in %lus)",
-			          domainstr, blockingreason, (unsigned long)(dns_cache->expires - time(NULL)));
+			          domainstr, blockingreason, (unsigned long)(dns_cache->expires - (time_t)query->timestamp));
 
 			force_next_DNS_reply = dns_cache->force_reply;
 			query_blocked(query, domain, client, blocking_status);
