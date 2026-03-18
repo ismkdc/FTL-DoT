@@ -52,6 +52,8 @@ static sqlite3_stmt* table_stmt = NULL;
 bool gravityDB_opened = false;
 static bool gravity_abp_format = false;
 static bool gravity_has_antigravity = false;
+static bool gravity_has_exact_allowlist = false;
+static bool gravity_has_exact_denylist = false;
 
 // Variables memorizing the parent gravity database connection and prepared
 // statements to avoid valgrind warnings about memory leaks
@@ -151,29 +153,35 @@ static void gravity_check_ABP_format(void)
 	sqlite3_finalize(stmt);
 }
 
-// Check if the antigravity table has any entries at all. When there are no
-// allow-adlists configured (the common case for most Pi-hole users), the
-// antigravity check in in_gravity() can be skipped entirely, saving one SQLite
-// bind/step/reset per cache-miss query.
-static void gravity_check_antigravity(void)
+// Helper: check if a table/view has any rows. Returns true if at least one row
+// exists, false otherwise (including on error).
+static bool gravity_table_has_entries(const char *table)
 {
+	char query[128];
+	snprintf(query, sizeof(query), "SELECT EXISTS(SELECT 1 FROM %s LIMIT 1);", table);
 	sqlite3_stmt *stmt = NULL;
-	int rc = sqlite3_prepare_v2(gravity_db,
-	                            "SELECT EXISTS(SELECT 1 FROM antigravity LIMIT 1);",
-	                            -1, &stmt, NULL);
-	if( rc != SQLITE_OK )
-	{
-		// If the table doesn't exist or can't be queried, assume no antigravity
-		gravity_has_antigravity = false;
-		return;
-	}
-
+	int rc = sqlite3_prepare_v2(gravity_db, query, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+		return false;
 	rc = sqlite3_step(stmt);
-	gravity_has_antigravity = (rc == SQLITE_ROW) && sqlite3_column_int(stmt, 0) != 0;
-
-	log_debug(DEBUG_DATABASE, "gravity_check_antigravity(): Antigravity table has entries: %s", gravity_has_antigravity ? "yes" : "no");
-
+	const bool has = (rc == SQLITE_ROW) && sqlite3_column_int(stmt, 0) != 0;
 	sqlite3_finalize(stmt);
+	return has;
+}
+
+// Check which optional list tables have entries so that empty-list lookups can
+// be skipped at query time, saving one SQLite bind/step/reset per cache-miss
+// query for each empty table.
+static void gravity_check_list_presence(void)
+{
+	gravity_has_antigravity = gravity_table_has_entries("antigravity");
+	log_debug(DEBUG_DATABASE, "Antigravity table has entries: %s", gravity_has_antigravity ? "yes" : "no");
+
+	gravity_has_exact_allowlist = gravity_table_has_entries("vw_allowlist");
+	log_debug(DEBUG_DATABASE, "Exact allowlist has entries: %s", gravity_has_exact_allowlist ? "yes" : "no");
+
+	gravity_has_exact_denylist = gravity_table_has_entries("vw_denylist");
+	log_debug(DEBUG_DATABASE, "Exact denylist has entries: %s", gravity_has_exact_denylist ? "yes" : "no");
 }
 
 // Open gravity database
@@ -241,7 +249,7 @@ static bool gravityDB_open(void)
 	// Check (and remember in global variable) if the antigravity table has
 	// any entries, allowing us to skip the antigravity check when it's
 	// empty
-	gravity_check_antigravity();
+	gravity_check_list_presence();
 
 	log_debug(DEBUG_DATABASE, "gravityDB_open(): Successfully opened gravity.db");
 
@@ -1233,6 +1241,10 @@ static void gravityDB_client_check_again(clientsData *client)
 
 enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clientsData *client)
 {
+	// Skip when no exact allowlist entries exist (common for most users)
+	if(!gravity_has_exact_allowlist)
+		return NOT_FOUND;
+
 	// If list statement is not ready and cannot be initialized (e.g. no
 	// access to the database), we return false to prevent an FTL crash
 	if(allowlist_stmt == NULL)
@@ -1472,6 +1484,10 @@ enum db_result in_gravity(const char *domain, cJSON **abp_patterns, clientsData 
 
 enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsData *client)
 {
+	// Skip when no exact denylist entries exist (common for most users)
+	if(!gravity_has_exact_denylist)
+		return NOT_FOUND;
+
 	// If list statement is not ready and cannot be initialized (e.g. no
 	// access to the database), we return false to prevent an FTL crash
 	if(denylist_stmt == NULL)
