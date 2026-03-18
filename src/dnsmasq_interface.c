@@ -727,11 +727,9 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	if(querytype == TYPE_PTR && config.dns.piholePTR.v.ptr_type != PTR_NONE)
 		check_pihole_PTR((char*)name);
 
-	// Convert domain to lower case
+	// Convert domain to lower case (single-pass copy + lowercase)
 	char domainString[MAXDOMAINLEN];
-	strncpy(domainString, name, sizeof(domainString));
-	domainString[sizeof(domainString) - 1] = '\0';
-	strtolower(domainString);
+	strcpy_tolower(domainString, name, sizeof(domainString));
 
 	// Get client IP address
 	// The requestor's IP address can be rewritten using EDNS(0) client
@@ -1554,7 +1552,7 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 
 	// If this cache record can expire, check if it is still valid and/or if
 	// caching is generally disabled
-	if((dns_cache->expires > 0 && dns_cache->expires < time(NULL)) ||
+	if((dns_cache->expires > 0 && dns_cache->expires < (time_t)query->timestamp) ||
 	    config.dns.cache.upstreamBlockedTTL.v.ui == 0)
 	{
 		// This cache record is expired or caching is disabled, we have
@@ -1951,11 +1949,7 @@ bool FTL_CNAME(const char *dst, const char *src, const int id)
 	// child_domain = Intermediate domain in CNAME path
 	// This is the domain which was queried later in this chain
 	char child_domain[MAXDOMAINLEN];
-	strncpy(child_domain, dst, sizeof(child_domain) - 1);
-	child_domain[sizeof(child_domain) - 1] = '\0';
-
-	// Convert to lowercase for matching
-	strtolower(child_domain);
+	strcpy_tolower(child_domain, dst, sizeof(child_domain));
 	const int child_domainID = findDomainID(child_domain, false);
 
 	// Set child domains's last query time

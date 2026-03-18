@@ -143,6 +143,7 @@ struct lookup_data {
 };
 
 void strtolower(char *str);
+void strcpy_tolower(char *dst, const char *src, size_t dstsize);
 int findQueryID(const int id);
 void queryIDMap_insert(const int dnsmasq_id, const int query_index);
 void queryIDMap_clear(void);

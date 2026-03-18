@@ -39,6 +39,16 @@ void strtolower(char *str)
 		*str = tolower(*str);
 }
 
+// copies src to dst while converting to lower case, ensuring null-termination
+// and avoiding buffer overflows
+void strcpy_tolower(char *dst, const char *src, size_t dstsize)
+{
+	const char *end = dst + dstsize - 1;
+	for(; *src && dst < end; ++src, ++dst)
+		*dst = tolower((unsigned char)*src);
+	*dst = '\0';
+}
+
 /**
  * @brief Computes a hash value for a given string using Jenkins' One-at-a-Time
  * hash algorithm.
