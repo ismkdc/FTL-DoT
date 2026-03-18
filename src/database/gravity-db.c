@@ -1465,7 +1465,7 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 
 	// Update statement if has just been initialized
 	if(stmt == NULL)
-		antigravity ?
+		stmt = antigravity ?
 			antigravity_stmt->get(antigravity_stmt, client->id) :
 			gravity_stmt->get(gravity_stmt, client->id);
 
