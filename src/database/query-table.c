@@ -1669,6 +1669,23 @@ bool queries_to_database(void)
 	// Loop over recent queries and store new or changed ones in the
 	// in-memory database
 	unsigned int unchanged = 0u;
+
+	// Batch dedup caches: within a single batch, the same domain/client/
+	// forward is typically referenced by many queries. Since the linking
+	// tables use INSERT OR IGNORE, only the first INSERT per unique entry
+	// has any effect. We use pointer comparison (valid because getstr()
+	// returns stable shared-memory pointers where identical strings have
+	// identical addresses) to skip redundant sqlite3_step calls.
+#define DOMAIN_CACHE_SIZE 256
+#define CLIENT_CACHE_SIZE 32
+#define UPSTREAM_CACHE_SIZE 8
+	const char *seen_domains[DOMAIN_CACHE_SIZE];
+	unsigned int seen_domains_n = 0;
+	const char *seen_client_ips[CLIENT_CACHE_SIZE];
+	const char *seen_client_names[CLIENT_CACHE_SIZE];
+	unsigned int seen_clients_n = 0;
+	int seen_upstreams[UPSTREAM_CACHE_SIZE];
+	unsigned int seen_upstreams_n = 0;
 	for(unsigned int queryID = last_query; queryID < counters->queries; queryID++)
 	{
 		// Get query pointer
@@ -1726,33 +1743,62 @@ bool queries_to_database(void)
 		// DOMAIN
 		const char *domain = getDomainString(query);
 		sqlite3_bind_text(query_stmt, 5, domain, -1, SQLITE_STATIC);
-		sqlite3_bind_text(domain_stmt, 1, domain, -1, SQLITE_STATIC);
 
-		// Execute prepare domain statement and check if successful
-		rc = sqlite3_step(domain_stmt);
-		if(rc != SQLITE_DONE)
+		// Check if domain was already inserted in this batch
+		bool domain_seen = false;
+		for(unsigned int i = 0; i < seen_domains_n; i++)
+			if(seen_domains[i] == domain)
+			{
+				domain_seen = true;
+				break;
+			}
+
+		if(!domain_seen)
 		{
-			log_err("Encountered error while trying to store domain");
+			sqlite3_bind_text(domain_stmt, 1, domain, -1, SQLITE_STATIC);
+			rc = sqlite3_step(domain_stmt);
+			if(rc != SQLITE_DONE)
+			{
+				log_err("Encountered error while trying to store domain");
+				sqlite3_reset(domain_stmt);
+				break;
+			}
 			sqlite3_reset(domain_stmt);
-			break;
+			if(seen_domains_n < DOMAIN_CACHE_SIZE)
+				seen_domains[seen_domains_n++] = domain;
 		}
-		sqlite3_reset(domain_stmt);
 
 		// CLIENT
 		const char *clientIP = getClientIPString(query);
 		sqlite3_bind_text(query_stmt, 6, clientIP, -1, SQLITE_STATIC);
-		sqlite3_bind_text(client_stmt, 1, clientIP, -1, SQLITE_STATIC);
 		const char *clientName = getClientNameString(query);
 		sqlite3_bind_text(query_stmt, 7, clientName, -1, SQLITE_STATIC);
-		sqlite3_bind_text(client_stmt, 2, clientName, -1, SQLITE_STATIC);
 
-		// Execute prepare client statement and check if successful
-		rc = sqlite3_step(client_stmt);
-		sqlite3_reset(client_stmt);
-		if(rc != SQLITE_DONE)
+		// Check if client was already inserted in this batch
+		bool client_seen = false;
+		for(unsigned int i = 0; i < seen_clients_n; i++)
+			if(seen_client_ips[i] == clientIP && seen_client_names[i] == clientName)
+			{
+				client_seen = true;
+				break;
+			}
+
+		if(!client_seen)
 		{
-			log_err("Encountered error while trying to store client");
-			break;
+			sqlite3_bind_text(client_stmt, 1, clientIP, -1, SQLITE_STATIC);
+			sqlite3_bind_text(client_stmt, 2, clientName, -1, SQLITE_STATIC);
+			rc = sqlite3_step(client_stmt);
+			sqlite3_reset(client_stmt);
+			if(rc != SQLITE_DONE)
+			{
+				log_err("Encountered error while trying to store client");
+				break;
+			}
+			if(seen_clients_n < CLIENT_CACHE_SIZE)
+			{
+				seen_client_ips[seen_clients_n] = clientIP;
+				seen_client_names[seen_clients_n++] = clientName;
+			}
 		}
 
 		// FORWARD
@@ -1770,17 +1816,29 @@ bool queries_to_database(void)
 				{
 					// Use transient here as we step only after the buffer goes out of scope
 					sqlite3_bind_text(query_stmt, 8, buffer, len, SQLITE_TRANSIENT);
-					// Use static here as we insert right away
-					sqlite3_bind_text(forward_stmt, 1, buffer, len, SQLITE_STATIC);
 
-					// Execute prepared forward statement and check if successful
-					rc = sqlite3_step(forward_stmt);
-					sqlite3_clear_bindings(forward_stmt);
-					sqlite3_reset(forward_stmt);
-					if(rc != SQLITE_DONE)
+					// Check if this upstream was already inserted in this batch
+					bool forward_seen = false;
+					for(unsigned int i = 0; i < seen_upstreams_n; i++)
+						if(seen_upstreams[i] == query->upstreamID)
+						{
+							forward_seen = true;
+							break;
+						}
+
+					if(!forward_seen)
 					{
-						log_err("Encountered error while trying to store forward");
-						break;
+						// Use static here as we insert right away
+						sqlite3_bind_text(forward_stmt, 1, buffer, len, SQLITE_STATIC);
+						rc = sqlite3_step(forward_stmt);
+						sqlite3_reset(forward_stmt);
+						if(rc != SQLITE_DONE)
+						{
+							log_err("Encountered error while trying to store forward");
+							break;
+						}
+						if(seen_upstreams_n < UPSTREAM_CACHE_SIZE)
+							seen_upstreams[seen_upstreams_n++] = query->upstreamID;
 					}
 				}
 				else
@@ -1815,7 +1873,6 @@ bool queries_to_database(void)
 			sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_CNAME_DOMAIN);
 			sqlite3_bind_text(addinfo_stmt, 2, cname, len, SQLITE_STATIC);
 			rc = sqlite3_step(addinfo_stmt);
-			sqlite3_clear_bindings(addinfo_stmt);
 			sqlite3_reset(addinfo_stmt);
 			if(rc != SQLITE_DONE)
 			{
@@ -1833,7 +1890,6 @@ bool queries_to_database(void)
 			sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_LIST_ID);
 			sqlite3_bind_int(addinfo_stmt, 2, cache->list_id);
 			rc = sqlite3_step(addinfo_stmt);
-			sqlite3_clear_bindings(addinfo_stmt);
 			sqlite3_reset(addinfo_stmt);
 			if(rc != SQLITE_DONE)
 			{
@@ -1874,7 +1930,6 @@ bool queries_to_database(void)
 
 		// Step and check if successful
 		rc = sqlite3_step(query_stmt);
-		sqlite3_clear_bindings(query_stmt);
 		sqlite3_reset(query_stmt);
 
 		if( rc != SQLITE_DONE )
