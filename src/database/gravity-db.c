@@ -1396,7 +1396,39 @@ cJSON *gen_abp_patterns(const char *domain)
 	return patterns;
 }
 
-enum db_result in_gravity(const char *domain, cJSON **abp_patterns, clientsData *client, const bool antigravity, int *domain_id)
+// Lazily compute the ABP suffix offsets for the given domain. Each offset
+// points to the start of a domain suffix (TLD-first order).
+// Example: "ads.tracking.example.com" yields offsets for
+//   "com", "example.com", "tracking.example.com", "ads.tracking.example.com"
+static void gen_abp_offsets(const char *domain, struct abp_patterns *abp)
+{
+	abp->generated = true;
+
+	if(!gravity_abp_format)
+	{
+		abp->count = 0;
+		return;
+	}
+
+	// First pass: collect suffix start positions in forward order
+	// (full-domain first, then after each dot)
+	unsigned int fwd[ABP_MAX_SUFFIXES];
+	unsigned int n = 0;
+	fwd[n++] = 0; // full domain
+	for(const char *p = domain; *p != '\0' && n < ABP_MAX_SUFFIXES; p++)
+	{
+		if(*p == '.')
+			fwd[n++] = (unsigned int)(p - domain + 1);
+	}
+
+	// Reverse to TLD-first order (matching original gen_abp_patterns
+	// behaviour)
+	abp->count = n;
+	for(unsigned int i = 0; i < n; i++)
+		abp->offsets[i] = fwd[n - 1 - i];
+}
+
+enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsData *client, const bool antigravity, int *domain_id)
 {
 	// Skip antigravity check entirely when no allow-adlists exist
 	if(antigravity && !gravity_has_antigravity)
@@ -1420,7 +1452,7 @@ enum db_result in_gravity(const char *domain, cJSON **abp_patterns, clientsData 
 		antigravity_stmt->get(antigravity_stmt, client->id) :
 		gravity_stmt->get(gravity_stmt, client->id);
 
-	// Get string for debug logging
+	// Get list name for debug logging and domain_in_list()
 	const char *listname = antigravity ? "antigravity" : "gravity";
 
 	// If client statement is not ready and cannot be initialized (e.g. no access to
@@ -1451,29 +1483,25 @@ enum db_result in_gravity(const char *domain, cJSON **abp_patterns, clientsData 
 	if(!gravity_abp_format)
 		return NOT_FOUND;
 
-	// Lazily generate ABP patterns on first need. This avoids heap
-	// allocations when the exact match above already decided about the
-	// result and we don't need to check ABP patterns at all.
-	if(*abp_patterns == NULL && (*abp_patterns = gen_abp_patterns(domain)) == NULL)
-	{
-		log_err("Failed to generate ABP patterns for domain \"%s\"", domain);
-		return LIST_NOT_AVAILABLE;
-	}
+	// Lazily compute suffix offsets on first need. This avoids any work
+	// when the exact match above already decided the result.
+	if(!abp->generated)
+		gen_abp_offsets(domain, abp);
 
-	// Check if any of the ABP patterns is in the (anti)gravity list
-	cJSON * abp_pattern = NULL;
-	cJSON_ArrayForEach(abp_pattern, *abp_patterns)
+	// Check each ABP-style suffix pattern against the (anti)gravity list.
+	// Patterns are built on the fly in a stack buffer, avoiding any heap
+	// allocation that the old cJSON-based approach required.
+	const char *prefix = antigravity ? "@@||" : "||";
+	for(unsigned int i = 0; i < abp->count; i++)
 	{
-		// Get pattern from array
-		const char *pattern = cJSON_GetStringValue(abp_pattern);
+		char pattern[MAXDOMAINLEN + 8]; // "@@||" + domain + "^" + NUL
+		snprintf(pattern, sizeof(pattern), "%s%s^", prefix, domain + abp->offsets[i]);
 
-		// Skip leading "@@" for gravity matches
-		const char *this_pattern = antigravity ? pattern : pattern + 2;
-		log_debug(DEBUG_QUERIES, "Checking if \"%s\" is in %s (ABP): %s",
-		          this_pattern, listname, exact_match == FOUND ? "yes" : "no");
+		log_debug(DEBUG_QUERIES, "Checking if \"%s\" is in %s (ABP)",
+		          pattern, listname);
 
 		// Check domain pattern against database
-		const enum db_result abp_match = domain_in_list(this_pattern, stmt, listname, domain_id);
+		const enum db_result abp_match = domain_in_list(pattern, stmt, listname, domain_id);
 		if(abp_match == FOUND || abp_match == LIST_NOT_AVAILABLE)
 			return FOUND;
 	}

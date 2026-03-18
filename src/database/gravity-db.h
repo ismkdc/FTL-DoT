@@ -54,7 +54,19 @@ void check_restored_gravity(void);
 bool gravity_updated(void);
 
 cJSON *gen_abp_patterns(const char *domain);
-enum db_result in_gravity(const char *domain, cJSON **abp_patterns, clientsData *client, const bool antigravity, int *domain_id);
+
+// Stack-based ABP pattern structure used on the hot query path to avoid
+// heap-allocating a cJSON array per cache-miss query. Only the suffix start
+// offsets into the original domain are stored; the actual ABP strings are built
+// on the fly right before the SQLite bind call.
+#define ABP_MAX_SUFFIXES 128
+struct abp_patterns {
+	unsigned int offsets[ABP_MAX_SUFFIXES];
+	unsigned int count;
+	bool generated;
+};
+
+enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsData *client, const bool antigravity, int *domain_id);
 enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsData *client);
 enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clientsData *client);
 

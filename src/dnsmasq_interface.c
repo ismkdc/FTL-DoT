@@ -1339,14 +1339,14 @@ static bool check_domain_blocked(const char *domain,
 		return true;
 	}
 
-	// ABP patterns are generated lazily inside in_gravity() only
-	// when exact-match fails and ABP format is enabled, avoiding
-	// heap allocations in the common exact-match case.
-	cJSON *abp_patterns = NULL;
+	// ABP patterns are generated lazily inside in_gravity() only when
+	// exact-match fails and ABP format is enabled.  Using a stack struct
+	// avoids all heap allocations in this path.
+	struct abp_patterns abp = { .count = 0, .generated = false };
 
 	// Check domain against antigravity
 	int list_id = -1;
-	const enum db_result antigravity = in_gravity(domain, &abp_patterns, client, true, &list_id);
+	const enum db_result antigravity = in_gravity(domain, &abp, client, true, &list_id);
 	if(antigravity == FOUND)
 	{
 		log_debug(DEBUG_QUERIES, "Allowing query due to antigravity match (list ID %i)", list_id);
@@ -1364,15 +1364,11 @@ static bool check_domain_blocked(const char *domain,
 		// than explicitly allowed domains.
 		query->flags.allowed = true;
 
-		// Free allocated memory
-		if(abp_patterns != NULL)
-			cJSON_Delete(abp_patterns);
-
 		return false;
 	}
 
 	// Check domains against gravity domains
-	const enum db_result gravity = in_gravity(domain, &abp_patterns, client, false, &list_id);
+	const enum db_result gravity = in_gravity(domain, &abp, client, false, &list_id);
 	if(gravity == FOUND)
 	{
 		// Set new status
@@ -1385,16 +1381,9 @@ static bool check_domain_blocked(const char *domain,
 		// see remarks above for the list_id values
 		dns_cache->list_id = -1 * (list_id + 2);
 
-		// Free allocated memory
-		if(abp_patterns != NULL)
-			cJSON_Delete(abp_patterns);
-
 		// We block this domain
 		return true;
 	}
-
-	if(abp_patterns != NULL)
-		cJSON_Delete(abp_patterns);
 
 	// Check if one of the database lookups returned that the database is
 	// currently busy
