@@ -51,6 +51,7 @@ static sqlite3 *gravity_db = NULL;
 static sqlite3_stmt* table_stmt = NULL;
 bool gravityDB_opened = false;
 static bool gravity_abp_format = false;
+static bool gravity_has_antigravity = false;
 
 // Variables memorizing the parent gravity database connection and prepared
 // statements to avoid valgrind warnings about memory leaks
@@ -150,6 +151,31 @@ static void gravity_check_ABP_format(void)
 	sqlite3_finalize(stmt);
 }
 
+// Check if the antigravity table has any entries at all. When there are no
+// allow-adlists configured (the common case for most Pi-hole users), the
+// antigravity check in in_gravity() can be skipped entirely, saving one SQLite
+// bind/step/reset per cache-miss query.
+static void gravity_check_antigravity(void)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(gravity_db,
+	                            "SELECT EXISTS(SELECT 1 FROM antigravity LIMIT 1);",
+	                            -1, &stmt, NULL);
+	if( rc != SQLITE_OK )
+	{
+		// If the table doesn't exist or can't be queried, assume no antigravity
+		gravity_has_antigravity = false;
+		return;
+	}
+
+	rc = sqlite3_step(stmt);
+	gravity_has_antigravity = (rc == SQLITE_ROW) && sqlite3_column_int(stmt, 0) != 0;
+
+	log_debug(DEBUG_DATABASE, "gravity_check_antigravity(): Antigravity table has entries: %s", gravity_has_antigravity ? "yes" : "no");
+
+	sqlite3_finalize(stmt);
+}
+
 // Open gravity database
 static bool gravityDB_open(void)
 {
@@ -211,6 +237,11 @@ static bool gravityDB_open(void)
 	// Check (and remember in global variable) if there are any ABP-style
 	// entries in the database
 	gravity_check_ABP_format();
+
+	// Check (and remember in global variable) if the antigravity table has
+	// any entries, allowing us to skip the antigravity check when it's
+	// empty
+	gravity_check_antigravity();
 
 	log_debug(DEBUG_DATABASE, "gravityDB_open(): Successfully opened gravity.db");
 
@@ -1355,6 +1386,10 @@ cJSON *gen_abp_patterns(const char *domain)
 
 enum db_result in_gravity(const char *domain, cJSON **abp_patterns, clientsData *client, const bool antigravity, int *domain_id)
 {
+	// Skip antigravity check entirely when no allow-adlists exist
+	if(antigravity && !gravity_has_antigravity)
+		return NOT_FOUND;
+
 	// If list statement is not ready and cannot be initialized (e.g. no
 	// access to the database), we return false to prevent an FTL crash
 	if(gravity_stmt == NULL || antigravity_stmt == NULL)
