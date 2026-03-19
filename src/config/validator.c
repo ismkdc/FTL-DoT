@@ -215,7 +215,7 @@ bool validate_cidr(union conf_value *val, const char *key, char err[VALIDATOR_ER
 	struct in_addr addr;
 	struct in6_addr addr6;
 	int ip4 = 0, ip6 = 0;
-	if((ip4 = inet_pton(AF_INET, ip, &addr) != 1) && (ip6 = inet_pton(AF_INET6, ip, &addr6)) != 1)
+	if(((ip4 = inet_pton(AF_INET, ip, &addr)) != 1) && ((ip6 = inet_pton(AF_INET6, ip, &addr6)) != 1))
 	{
 		snprintf(err, VALIDATOR_ERRBUF_LEN, "%s: not a valid IPv4 nor IPv6 address (\"%s\")", key, ip);
 		free(str);
