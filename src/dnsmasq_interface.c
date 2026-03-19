@@ -1749,23 +1749,17 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 	}
 
 	// when we reach this point: the query is not in FTL's cache (for this client)
-
-	// Make a writable local copy; pointer arithmetic on domain_lower is used
-	// below (e.g. domain_lower + 6 for ESNI stripping). The source is the
-	// caller's stack buffer — already lowercase, no SHM lifetime concern.
-	char domain_lower[MAXDOMAINLEN];
-	strcpy_tolower(domain_lower, domainstr, sizeof(domain_lower));
-	const char *blockedDomain = domain_lower;
-
+	
 	// Check exact whitelist for match
-	TIMED_DB_OP_RESULT(query->flags.allowed, in_allowlist(domain_lower, dns_cache, client) == FOUND);
+	const char *blockedDomain = domainstr;
+	TIMED_DB_OP_RESULT(query->flags.allowed, in_allowlist(domainstr, dns_cache, client) == FOUND);
 
 	// If not found: Check regex whitelist for match
 	if(!query->flags.allowed)
-		TIMED_DB_OP_RESULT(query->flags.allowed, in_regex(domain_lower, dns_cache, client->id, REGEX_ALLOW));
+		TIMED_DB_OP_RESULT(query->flags.allowed, in_regex(domainstr, dns_cache, client->id, REGEX_ALLOW));
 
 	// Check if this is a special domain
-	if(!query->flags.allowed && special_domain(query, domain_lower))
+	if(!query->flags.allowed && special_domain(query, domainstr))
 	{
 		// Set DNS cache properties
 		dns_cache->blocking_status = QUERY_SPECIAL_DOMAIN;
@@ -1776,7 +1770,7 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 		query_blocked(query, domain, client, QUERY_SPECIAL_DOMAIN);
 
 		// Debug output
-		log_debug(DEBUG_QUERIES, "Special domain: %s is %s", domain_lower, blockingreason);
+		log_debug(DEBUG_QUERIES, "Special domain: %s is %s", domainstr, blockingreason);
 
 		return true;
 	}
@@ -1785,16 +1779,16 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 	unsigned char new_status = QUERY_UNKNOWN;
 	bool db_okay = true;
 	bool blockDomain;
-	TIMED_DB_OP_RESULT(blockDomain, check_domain_blocked(domain_lower, client, query, dns_cache, &new_status, &db_okay));
+	TIMED_DB_OP_RESULT(blockDomain, check_domain_blocked(domainstr, client, query, dns_cache, &new_status, &db_okay));
 
 	// Check blacklist (exact + regex) and gravity for _esni.domain if enabled
 	// (defaulting to true)
 	if(config.dns.blockESNI.v.b &&
 	   !query->flags.allowed && !blockDomain &&
-	   domain_lower[0] == '_' &&
-	   strncmp(domain_lower, "_esni.", 6u) == 0 && domain_lower[6] != '\0')
+	   domainstr[0] == '_' &&
+	   strncmp(domainstr, "_esni.", 6u) == 0 && domainstr[6] != '\0')
 	{
-		TIMED_DB_OP_RESULT(blockDomain, check_domain_blocked(domain_lower + 6u, client, query, dns_cache, &new_status, &db_okay));
+		TIMED_DB_OP_RESULT(blockDomain, check_domain_blocked(domainstr + 6u, client, query, dns_cache, &new_status, &db_okay));
 
 		// Update DNS cache status
 		cacheStatus = dns_cache->blocking_status;
@@ -1803,7 +1797,7 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 		{
 			// Truncate "_esni." from queried domain if the parenting domain was
 			// the reason for blocking this query
-			blockedDomain = domain_lower + 6u;
+			blockedDomain = domainstr + 6u;
 			// Force next DNS reply to be NXDOMAIN for _esni.* queries
 			force_next_DNS_reply = REPLY_NXDOMAIN;
 
@@ -1824,7 +1818,7 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 		if(config.debug.queries.v.b)
 		{
 			log_debug(DEBUG_QUERIES, "Blocking %s as %s is %s (domainlist ID: %i)",
-			          domain_lower, blockedDomain, blockingreason, dns_cache->list_id);
+			          domainstr, blockedDomain, blockingreason, dns_cache->list_id);
 			if(force_next_DNS_reply != 0)
 				log_debug(DEBUG_QUERIES, "Forcing next reply to %s", get_query_reply_str(force_next_DNS_reply));
 		}
@@ -1840,7 +1834,7 @@ static bool FTL_check_blocking(const unsigned int queryID, const unsigned int do
 		// client is guaranteed to be non-NULL above
 		log_debug(DEBUG_QUERIES, "DNS cache: %s/%s/%s is %s (domainlist ID: %i)",
 		          get_query_type_str(query->type, NULL, NULL), getstr(client->ippos),
-		          domain_lower, query->flags.allowed ? "allowed" : "not blocked", dns_cache->list_id);
+		          domainstr, query->flags.allowed ? "allowed" : "not blocked", dns_cache->list_id);
 	}
 
 	return blockDomain;
