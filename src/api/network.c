@@ -302,6 +302,7 @@ static int api_network_devices_DELETE(struct ftl_conn *api)
 	int deleted = 0;
 	if(!networkTable_deleteDevice(db, device_id, &deleted, &sql_msg))
 	{
+		dbclose(&db);
 		// Add SQL message (may be NULL = not available)
 		return send_json_error(api, 500,
 		                       "database_error",
