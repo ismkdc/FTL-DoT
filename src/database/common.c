@@ -824,14 +824,14 @@ bool db_update_disk_counter(sqlite3 *db, const enum counters_table_props ID, con
 		checkFTLDBrc(ret);
 		return false;
 	}
-	ret = sqlite3_bind_int(stmt, 1, ID);
+	ret = sqlite3_bind_int(stmt, 1, change);
 	if(ret != SQLITE_OK)
 	{
 		checkFTLDBrc(ret);
 		sqlite3_finalize(stmt);
 		return false;
 	}
-	ret = sqlite3_bind_int(stmt, 2, change);
+	ret = sqlite3_bind_int(stmt, 2, ID);
 	if(ret != SQLITE_OK)
 	{
 		checkFTLDBrc(ret);
