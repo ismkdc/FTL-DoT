@@ -1253,11 +1253,17 @@ bool flush_network_table(void)
 
 	// Remove all IP addresses
 	if(dbquery(db, "DELETE FROM network_addresses;") != SQLITE_OK)
+	{
+		dbclose(&db);
 		return false;
+	}
 
 	// Remove all devices
 	if(dbquery(db, "DELETE FROM network;") != SQLITE_OK)
+	{
+		dbclose(&db);
 		return false;
+	}
 
 	// Close database
 	dbclose(&db);

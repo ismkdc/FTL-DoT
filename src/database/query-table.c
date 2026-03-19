@@ -1016,6 +1016,7 @@ bool delete_old_queries_from_db(const bool use_memdb, const double mintime)
 	if( rc != SQLITE_OK ){
 		log_err("delete_old_queries_from_db(%s): SQL error prepare: %s",
 		        use_memdb ? "memdb" : "disk", sqlite3_errstr(rc));
+		if(!use_memdb) dbclose(&db);
 		return false;
 	}
 
@@ -1025,6 +1026,7 @@ bool delete_old_queries_from_db(const bool use_memdb, const double mintime)
 		log_err("delete_old_queries_from_db(%s): Failed to bind mintime: %s",
 		        use_memdb ? "memdb" : "disk", sqlite3_errstr(rc));
 		sqlite3_finalize(stmt);
+		if(!use_memdb) dbclose(&db);
 		return false;
 	}
 
