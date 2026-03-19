@@ -855,7 +855,7 @@ int api_stats_recentblocked(struct ftl_conn *api)
 	// Find most recently blocked query
 	unsigned int found = 0;
 	cJSON *blocked = JSON_NEW_ARRAY();
-	for(int queryID = counters->queries - 1; queryID > 0 ; queryID--)
+	for(int queryID = counters->queries - 1; queryID >= 0 ; queryID--)
 	{
 		const queriesData *query = getQuery(queryID, true);
 		if(query == NULL)

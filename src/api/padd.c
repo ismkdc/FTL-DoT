@@ -48,7 +48,7 @@ int api_padd(struct ftl_conn *api)
 	if(config.misc.privacylevel.v.privacy_level < PRIVACY_HIDE_DOMAINS)
 	{
 		// Find most recently blocked query
-		for(int queryID = counters->queries - 1; queryID > 0 ; queryID--)
+		for(int queryID = counters->queries - 1; queryID >= 0 ; queryID--)
 		{
 			const queriesData *query = getQuery(queryID, true);
 			if(query == NULL)
