@@ -2126,6 +2126,8 @@ bool gravityDB_delFromTable(const enum gravity_list_type listtype, const cJSON* 
 		// Rollback transaction
 		querystr = "ROLLBACK TRANSACTION;";
 		sqlite3_exec(gravity_db, querystr, NULL, NULL, NULL);
+
+		return false;
 	}
 
 	// Commit transaction
@@ -2140,6 +2142,8 @@ bool gravityDB_delFromTable(const enum gravity_list_type listtype, const cJSON* 
 		// Rollback transaction
 		querystr = "ROLLBACK TRANSACTION;";
 		sqlite3_exec(gravity_db, querystr, NULL, NULL, NULL);
+
+		return false;
 	}
 
 	return true;
