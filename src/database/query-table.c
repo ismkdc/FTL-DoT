@@ -258,6 +258,30 @@ bool init_memory_database(void)
 			sqlite3_close(_memdb);
 			return false;
 		}
+
+		// Set synchronous=NORMAL for the on-disk WAL database.
+		// SQLite's default (FULL) fsyncs the WAL file on every commit,
+		// which is unnecessarily conservative in WAL mode and expensive
+		// on flash/SD storage (10-100 ms per fsync on a Raspberry Pi).
+		//
+		// With NORMAL, SQLite skips the per-commit fsync and relies on
+		// the WAL's per-frame checksums for integrity: on an abrupt
+		// power loss, any WAL frame with a bad checksum is silently
+		// discarded during recovery, so the database is never left
+		// corrupt. At worst, queries logged since the last checkpoint
+		// (up to one flush interval, default 60 s) may not be persisted
+		// — an acceptable trade-off for a query log.
+		//
+		// SQLite documentation explicitly states:
+		//   "WAL mode is safe from corruption with synchronous=NORMAL."
+		rc = sqlite3_exec(_memdb, "PRAGMA disk.synchronous=NORMAL", NULL, NULL, NULL);
+		if( rc != SQLITE_OK )
+		{
+			log_err("init_memory_database(): Error setting synchronous mode: %s",
+			        sqlite3_errstr(rc));
+			sqlite3_close(_memdb);
+			return false;
+		}
 	}
 	else if(attached)
 	{
