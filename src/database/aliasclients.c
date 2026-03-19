@@ -244,7 +244,10 @@ void reset_aliasclient(sqlite3 *db, clientsData *client)
 
 	// Skip alias-clients themselves
 	if(client->flags.aliasclient)
+	{
+		if(db_opened) dbclose(&db);
 		return;
+	}
 
 	// Find corresponding alias-client (if any)
 	client->aliasclient_id = get_aliasclient_ID(db, client);

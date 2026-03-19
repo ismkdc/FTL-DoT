@@ -1677,9 +1677,6 @@ bool unify_hwaddr(sqlite3 *db)
 		const int id = sqlite3_column_int(stmt, 0);
 		const char *hwaddr = (char*)sqlite3_column_text(stmt, 1);
 
-		// Reset statement
-		sqlite3_reset(stmt);
-
 		// Update firstSeen with lowest value across all rows with the same hwaddr
 		dbquery(db, "UPDATE network "\
 		            "SET firstSeen = (SELECT MIN(firstSeen) FROM network WHERE hwaddr = \'%s\' COLLATE NOCASE) "\
@@ -1694,6 +1691,11 @@ bool unify_hwaddr(sqlite3 *db)
 		dbquery(db, "DELETE FROM network "\
 		            "WHERE hwaddr = \'%s\' COLLATE NOCASE "\
 		            "AND id != %i;", hwaddr, id);
+
+		// Reset statement only after all queries using hwaddr have
+		// executed as sqlite3_column_text() pointers are invalidated by
+		// sqlite3_reset().
+		sqlite3_reset(stmt);
 	}
 
 	// Update database version to 4
