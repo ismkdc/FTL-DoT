@@ -478,7 +478,7 @@ int api_history_database_clients(struct ftl_conn *api)
 	if( rc != SQLITE_OK ){
 		log_err("api_stats_database_clients() - SQL error prepare outer (%i): %s",
 		        rc, sqlite3_errstr(rc));
-
+		dbclose(&db);
 		return send_json_error(api, 500,
 		                       "internal_error",
 		                       "Failed to prepare outer statement",
@@ -533,7 +533,7 @@ int api_history_database_clients(struct ftl_conn *api)
 	if( rc != SQLITE_OK ){
 		log_err("api_stats_database_clients() - SQL error prepare (%i): %s",
 		   rc, sqlite3_errstr(rc));
-
+		dbclose(&db);
 		return send_json_error(api, 500,
 		                       "internal_error",
 		                       "Failed to prepare inner statement",
