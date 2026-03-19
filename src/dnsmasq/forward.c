@@ -1249,10 +1249,10 @@ void reply_query(int fd, time_t now)
 	  server = daemon->serverarray[serv];
 	  if (server->sfd && server->sfd->fd == fd)
 	    break;
-
-	  if (serv == last)
-	    return;
 	}
+
+      if (serv == last)
+	return;
     }
   
   /* spoof check: answer must come from known server, also
