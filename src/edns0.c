@@ -168,7 +168,7 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 //      level of the responder.  In this way, a requestor will learn the
 //      implementation level of a responder as a side effect of every
 //      response, including error responses and including RCODE=BADVERS.
-	unsigned char edns0_version = (ttl >> 16) % 0xFF;
+	unsigned char edns0_version = (ttl >> 16) & 0xFF;
 	if(edns0_version != 0x00)
 		return;
 
