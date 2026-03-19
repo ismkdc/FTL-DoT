@@ -62,6 +62,7 @@ cJSON *gen_abp_patterns(const char *domain);
 #define ABP_MAX_SUFFIXES 128
 struct abp_patterns {
 	unsigned int offsets[ABP_MAX_SUFFIXES];
+	unsigned int lengths[ABP_MAX_SUFFIXES];
 	unsigned int count;
 	bool generated;
 };

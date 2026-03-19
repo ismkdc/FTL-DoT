@@ -1419,6 +1419,7 @@ static void gen_abp_offsets(const char *domain, struct abp_patterns *abp)
 
 	// First pass: collect suffix start positions in forward order
 	// (full-domain first, then after each dot)
+	const size_t domain_len = strlen(domain);
 	unsigned int fwd[ABP_MAX_SUFFIXES];
 	unsigned int n = 0;
 	fwd[n++] = 0; // full domain
@@ -1429,10 +1430,13 @@ static void gen_abp_offsets(const char *domain, struct abp_patterns *abp)
 	}
 
 	// Reverse to TLD-first order (matching original gen_abp_patterns
-	// behaviour)
+	// behaviour); pre-compute each suffix length from the single strlen above.
 	abp->count = n;
 	for(unsigned int i = 0; i < n; i++)
+	{
 		abp->offsets[i] = fwd[n - 1 - i];
+		abp->lengths[i] = (unsigned int)(domain_len - fwd[n - 1 - i]);
+	}
 }
 
 enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsData *client, const bool antigravity, int *domain_id)
@@ -1505,7 +1509,7 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 		char pattern[MAXDOMAINLEN + 8]; // "@@||" + domain + "^" + NUL
 		// Build pattern manually: prefix + domain-suffix + "^" + NUL
 		// Avoids snprintf format-string overhead for this tight inner loop.
-		const size_t suffix_len = strlen(domain + abp->offsets[i]);
+		const size_t suffix_len = abp->lengths[i];
 		memcpy(pattern, prefix, prefix_len);
 		memcpy(pattern + prefix_len, domain + abp->offsets[i], suffix_len);
 		pattern[prefix_len + suffix_len] = '^';
