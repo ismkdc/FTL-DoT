@@ -1521,8 +1521,8 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 
 		// Check domain pattern against database
 		const enum db_result abp_match = domain_in_list(pattern, stmt, listname, domain_id);
-		if(abp_match == FOUND || abp_match == LIST_NOT_AVAILABLE)
-			return FOUND;
+		if(abp_match != NOT_FOUND)
+			return abp_match;
 	}
 
 	// Domain not found in gravity list
