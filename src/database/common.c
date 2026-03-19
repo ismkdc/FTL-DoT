@@ -883,6 +883,7 @@ int db_query_int(sqlite3 *db, const char* querystr)
 	{
 		log_err("Encountered step error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -929,6 +930,7 @@ int db_query_int_int(sqlite3 *db, const char* querystr, const int arg)
 	{
 		log_err("Encountered step error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -975,6 +977,7 @@ int db_query_int_str(sqlite3 *db, const char* querystr, const char *arg)
 	{
 		log_err("Encountered step error in db_query_int(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -1018,6 +1021,7 @@ double db_query_double(sqlite3 *db, const char* querystr)
 		log_err("Encountered step error in db_query_double(\"%s\"): %s",
 		        querystr, sqlite3_errstr(rc));
 		checkFTLDBrc(rc);
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -1061,6 +1065,7 @@ int db_query_int_from_until(sqlite3 *db, const char* querystr, const double from
 	{
 		log_err("db_query_int_from_until(%s) - SQL error step (%i): %s",
 		        querystr, rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 
@@ -1106,6 +1111,7 @@ int db_query_int_from_until_type(sqlite3 *db, const char* querystr, const double
 	{
 		log_err("db_query_int_from_until(%s) - SQL error step (%i): %s",
 		        querystr, rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
 		return DB_FAILED;
 	}
 	rc = sqlite3_finalize(stmt);
