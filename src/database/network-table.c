@@ -1564,6 +1564,7 @@ void parse_neighbor_cache(sqlite3 *db)
 		{
 			log_err("Database error in ARP cache processing loop");
 			free(client_status);
+			dbquery(db, "ROLLBACK");
 			return;
 		}
 	}
@@ -1572,6 +1573,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	if(killed)
 	{
 		free(client_status);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1580,6 +1582,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	if(!add_FTL_clients_to_network_table(db, client_status, clients, now, &additional_entries))
 	{
 		free(client_status);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
@@ -1588,17 +1591,26 @@ void parse_neighbor_cache(sqlite3 *db)
 
 	// Check thread cancellation
 	if(killed)
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Finally, loop over the available interfaces to ensure we list the
 	// IP addresses correctly (local addresses are NOT contained in the
 	// ARP/neighbor cache).
 	if(!add_local_interfaces_to_network_table(db, now, &additional_entries))
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Check thread cancellation
 	if(killed)
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Ensure mock-devices which are not assigned to any addresses any more
 	// (they have been converted to "real" devices), are removed at this point
@@ -1624,6 +1636,7 @@ void parse_neighbor_cache(sqlite3 *db)
 			log_err("Storing devices in network table failed: %s", sqlite3_errstr(rc));
 
 		checkFTLDBrc(rc);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
