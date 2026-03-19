@@ -681,7 +681,7 @@ cJSON *get_top_upstreams(struct ftl_conn *api, const bool upstreams_only)
 	unlock_shm();
 
 	// Sort temporary array in descending order
-	qsort(top_upstreams, added_upstreams, sizeof(*top_upstreams), cmpdesc);
+	qsort(top_upstreams, added_upstreams, sizeof(*top_upstreams), cmpdesc_te);
 
 	// Loop over available forward destinations
 	cJSON *jtop_upstreams = JSON_NEW_ARRAY();
