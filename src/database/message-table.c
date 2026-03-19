@@ -289,6 +289,7 @@ bool create_message_table(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 6))
 	{
 		log_err("create_message_table(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 

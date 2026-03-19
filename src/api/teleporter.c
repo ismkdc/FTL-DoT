@@ -501,6 +501,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 		{
 			log_err("import_json_table(%s): Unable to delete entries from table \"%s\": %s",
 			        file->filename, file->table_name, sqlite3_errmsg(db));
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(db);
 			return false;
 		}
@@ -513,6 +514,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 		{
 			log_err("import_json_table(%s): Unable to delete entries from table \"%s\": %s",
 			        file->filename, file->table_name, sqlite3_errmsg(db));
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(db);
 			return false;
 		}
@@ -564,6 +566,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 	{
 		log_err("Unable to prepare SQL statement: %s", sqlite3_errmsg(db));
 		sqlite3_free(sql);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return false;
 	}
@@ -586,6 +589,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 				{
 					log_err("Unable to bind text value to SQL statement: %s", sqlite3_errmsg(db));
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return false;
 				}
@@ -597,6 +601,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 				{
 					log_err("Unable to bind integer value to SQL statement: %s", sqlite3_errmsg(db));
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return false;
 				}
@@ -608,6 +613,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 				{
 					log_err("Unable to bind NULL value to SQL statement: %s", sqlite3_errmsg(db));
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return false;
 				}
@@ -616,6 +622,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 			{
 				log_err("Unable to bind value to SQL statement: type = %X", (unsigned int)json_value->type & 0xFF);
 				sqlite3_finalize(stmt);
+				sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 				sqlite3_close(db);
 				return false;
 			}
@@ -626,6 +633,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 		{
 			log_err("Unable to execute SQL statement: %s", sqlite3_errmsg(db));
 			sqlite3_finalize(stmt);
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(db);
 			return false;
 		}
@@ -635,6 +643,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 		{
 			log_err("Unable to reset SQL statement: %s", sqlite3_errmsg(db));
 			sqlite3_finalize(stmt);
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(db);
 			return false;
 		}
@@ -644,6 +653,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 	if(sqlite3_finalize(stmt) != SQLITE_OK)
 	{
 		log_err("Unable to finalize SQL statement: %s", sqlite3_errmsg(db));
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return false;
 	}
@@ -652,6 +662,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 	if(sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK)
 	{
 		log_err("Unable to commit transaction: %s", sqlite3_errmsg(db));
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return false;
 	}

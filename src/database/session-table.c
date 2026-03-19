@@ -35,6 +35,7 @@ bool create_session_table(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 15))
 	{
 		log_err("create_session_table(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -56,6 +57,7 @@ bool add_session_app_column(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 16))
 	{
 		log_err("add_session_app_column(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -77,6 +79,7 @@ bool add_session_cli_column(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 18))
 	{
 		log_err("add_session_cli_column(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -98,6 +101,7 @@ bool add_session_x_forwarded_for_column(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 19))
 	{
 		log_err("add_session_x_forwarded_for_column(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 

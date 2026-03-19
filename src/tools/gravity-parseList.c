@@ -258,6 +258,7 @@ int gravity_parseList(const char *infile, const char *outfile, const char *adlis
 		printf("%s  %s Unable to prepare SQL statement to insert domains into database file %s\n",
 		       over, cross, outfile);
 		fclose(fpin);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -270,6 +271,7 @@ int gravity_parseList(const char *infile, const char *outfile, const char *adlis
 		       over, cross, outfile);
 		fclose(fpin);
 		sqlite3_finalize(stmt);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -425,6 +427,7 @@ int gravity_parseList(const char *infile, const char *outfile, const char *adlis
 					over, cross, outfile);
 					fclose(fpin);
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return EXIT_FAILURE;
 				}
@@ -433,6 +436,7 @@ int gravity_parseList(const char *infile, const char *outfile, const char *adlis
 					printf("%s  %s Unable to insert domain into database file %s\n", over, cross, outfile);
 					fclose(fpin);
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return EXIT_FAILURE;
 				}
@@ -458,6 +462,7 @@ int gravity_parseList(const char *infile, const char *outfile, const char *adlis
 					over, cross, outfile);
 					fclose(fpin);
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return EXIT_FAILURE;
 				}
@@ -466,6 +471,7 @@ int gravity_parseList(const char *infile, const char *outfile, const char *adlis
 					printf("%s  %s Unable to insert domain into database file %s\n", over, cross, outfile);
 					fclose(fpin);
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return EXIT_FAILURE;
 				}
@@ -516,6 +522,8 @@ int gravity_parseList(const char *infile, const char *outfile, const char *adlis
 							{
 								printf("%s  %s Unable to allocate memory for invalid domains list\n", over, cross);
 								fclose(fpin);
+								sqlite3_finalize(stmt);
+								sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 								sqlite3_close(db);
 								return EXIT_FAILURE;
 							}
@@ -556,6 +564,7 @@ next_domain:
 		printf("%s  %s Unable to finalize SQL statement to insert domains into database file %s\n",
 		       over, cross, outfile);
 		fclose(fpin);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -575,6 +584,7 @@ next_domain:
 			printf("%s  %s Unable to update database properties in database file %s\n",
 			       over, cross, outfile);
 			fclose(fpin);
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(db);
 			return EXIT_FAILURE;
 		}
@@ -595,6 +605,7 @@ next_domain:
 		printf("%s  %s Unable to prepare SQL statement to update adlist properties in database file %s\n",
 		       over, cross, outfile);
 		fclose(fpin);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -605,6 +616,7 @@ next_domain:
 		       over, cross, outfile);
 		fclose(fpin);
 		sqlite3_finalize(stmt);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -614,6 +626,7 @@ next_domain:
 		       over, cross, outfile);
 		fclose(fpin);
 		sqlite3_finalize(stmt);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -623,6 +636,7 @@ next_domain:
 		       over, cross, outfile);
 		fclose(fpin);
 		sqlite3_finalize(stmt);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -632,6 +646,7 @@ next_domain:
 		       over, cross, outfile);
 		fclose(fpin);
 		sqlite3_finalize(stmt);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -641,6 +656,7 @@ next_domain:
 		       over, cross, outfile);
 		fclose(fpin);
 		sqlite3_finalize(stmt);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -649,6 +665,7 @@ next_domain:
 		printf("%s  %s Unable to finalize SQL statement to update adlist properties in database file %s\n",
 		       over, cross, outfile);
 		fclose(fpin);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
@@ -659,6 +676,7 @@ next_domain:
 		printf("%s  %s Unable to end transaction to insert domains into database file %s (database file may be corrupted)\n",
 		       over, cross, outfile);
 		fclose(fpin);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}

@@ -37,6 +37,7 @@ bool create_aliasclients_table(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 9))
 	{
 		log_err("create_aliasclients_table(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 

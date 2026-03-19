@@ -797,6 +797,7 @@ bool import_queries_from_disk(void)
 	if((rc = sqlite3_prepare_v2(memdb, querystr, -1, &stmt, NULL)) != SQLITE_OK)
 	{
 		log_err("import_queries_from_disk(): SQL error prepare: %s", sqlite3_errstr(rc));
+		sqlite3_exec(memdb, "ROLLBACK", NULL, NULL, NULL);
 		return false;
 	}
 
@@ -805,6 +806,7 @@ bool import_queries_from_disk(void)
 	{
 		log_err("import_queries_from_disk(): Failed to bind type mintime: %s", sqlite3_errstr(rc));
 		sqlite3_finalize(stmt);
+		sqlite3_exec(memdb, "ROLLBACK", NULL, NULL, NULL);
 		return false;
 	}
 
@@ -813,6 +815,7 @@ bool import_queries_from_disk(void)
 	{
 		log_err("import_queries_from_disk(): Failed to bind type now: %s", sqlite3_errstr(rc));
 		sqlite3_finalize(stmt);
+		sqlite3_exec(memdb, "ROLLBACK", NULL, NULL, NULL);
 		return false;
 	}
 
@@ -864,6 +867,7 @@ bool import_queries_from_disk(void)
 	if((rc = sqlite3_exec(memdb, "END", NULL, NULL, NULL)) != SQLITE_OK)
 	{
 		log_err("import_queries_from_disk(): Cannot end transaction: %s", sqlite3_errstr(rc));
+		sqlite3_exec(memdb, "ROLLBACK", NULL, NULL, NULL);
 		return false;
 	}
 

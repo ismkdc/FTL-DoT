@@ -477,6 +477,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 		{
 			strncpy(hint, err, ERRBUF_SIZE);
 			sqlite3_free(err);
+			sqlite3_exec(database, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(database);
 			return "Failed to delete from disk database table";
 		}
@@ -491,6 +492,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 		{
 			strncpy(hint, err, ERRBUF_SIZE);
 			sqlite3_free(err);
+			sqlite3_exec(database, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(database);
 			return "Failed to insert into disk database table";
 		}
@@ -503,6 +505,7 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	{
 		strncpy(hint, err, ERRBUF_SIZE);
 		sqlite3_free(err);
+		sqlite3_exec(database, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(database);
 		return "Failed to commit transaction";
 	}

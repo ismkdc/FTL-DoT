@@ -248,6 +248,7 @@ static bool create_counter_table(sqlite3* db)
 	if(!db_set_counter(db, DB_TOTALQUERIES, 0))
 	{
 		log_err("create_counter_table(): Failed to set total queries counter to zero!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -255,6 +256,7 @@ static bool create_counter_table(sqlite3* db)
 	if(!db_set_counter(db, DB_BLOCKEDQUERIES, 0))
 	{
 		log_err("create_counter_table(): Failed to set blocked queries counter to zero!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -262,6 +264,7 @@ static bool create_counter_table(sqlite3* db)
 	if(!db_set_FTL_property(db, DB_FIRSTCOUNTERTIMESTAMP, (unsigned long)time(0)))
 	{
 		log_err("create_counter_table(): Failed to update first counter timestamp!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -269,6 +272,7 @@ static bool create_counter_table(sqlite3* db)
 	if(!db_set_FTL_property(db, DB_VERSION, 2))
 	{
 		log_err("create_counter_table(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 	// End transaction
