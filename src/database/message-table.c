@@ -519,7 +519,12 @@ bool delete_message(cJSON *ids, int *deleted)
 	{
 		// Bind id to prepared statement
 		const int idval = cJSON_GetNumberValue(id);
-		sqlite3_bind_int(res, 1, idval);
+		if(sqlite3_bind_int(res, 1, idval) != SQLITE_OK)
+		{
+			log_err("delete_message() - Failed to bind id %d: %s", idval, sqlite3_errmsg(db));
+			success = false;
+			break;
+		}
 
 		// Execute and finalize
 		if(sqlite3_step(res) != SQLITE_DONE)
