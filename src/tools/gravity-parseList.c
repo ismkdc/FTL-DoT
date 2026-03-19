@@ -649,7 +649,6 @@ next_domain:
 		printf("%s  %s Unable to finalize SQL statement to update adlist properties in database file %s\n",
 		       over, cross, outfile);
 		fclose(fpin);
-		sqlite3_finalize(stmt);
 		sqlite3_close(db);
 		return EXIT_FAILURE;
 	}
