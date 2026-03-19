@@ -1297,7 +1297,10 @@ void parse_neighbor_cache(sqlite3 *db)
 
 	// Delete old entries from network table
 	if(!clean_network_table(db))
+	{
+		dbquery(db, "ROLLBACK");
 		return;
+	}
 
 	// Initialize array of status for individual clients used to
 	// remember the status of a client already seen in the neigh cache
@@ -1319,6 +1322,7 @@ void parse_neighbor_cache(sqlite3 *db)
 			log_err("Failed to read ARP cache, cannot update network table");
 			cJSON_Delete(json);
 			free(client_status);
+			dbquery(db, "ROLLBACK");
 			return;
 		}
 		log_debug(DEBUG_ARP, "Network table: Successfully read ARP cache with %i entries",
@@ -1606,6 +1610,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	{
 		log_err("Database error in mock-device cleaning statement");
 		checkFTLDBrc(rc);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 
