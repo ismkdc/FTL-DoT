@@ -211,6 +211,7 @@ char *get_dnsmasq_line(const unsigned int lineno)
 		else
 			count++;
 	}
+	free(linebuffer);
 	fclose(fp);
 	return NULL;
 }
