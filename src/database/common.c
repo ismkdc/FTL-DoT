@@ -1047,6 +1047,8 @@ int db_query_int_from_until(sqlite3 *db, const char* querystr, const double from
 	{
 		log_err("db_query_int_from_until(%s) - SQL error bind (%i): %s",
 		        querystr, rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		return DB_FAILED;
 	}
 
 	rc = sqlite3_step(stmt);
@@ -1086,13 +1088,15 @@ int db_query_int_from_until_type(sqlite3 *db, const char* querystr, const double
 		return DB_FAILED;
 	}
 
-	// Bind from and until to prepared statement
+	// Bind from, until, and type to prepared statement
 	if((rc = sqlite3_bind_double(stmt, 1, from))  != SQLITE_OK ||
 	   (rc = sqlite3_bind_double(stmt, 2, until)) != SQLITE_OK ||
 	   (rc = sqlite3_bind_int(stmt, 3, type)) != SQLITE_OK)
 	{
 		log_err("db_query_int_from_until(%s) - SQL error bind (%i): %s",
 		        querystr, rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		return DB_FAILED;
 	}
 
 	rc = sqlite3_step(stmt);
