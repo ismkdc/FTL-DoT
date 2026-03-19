@@ -476,16 +476,14 @@ static int _add_message(const enum message_type type,
 		goto end_of_add_message;
 	}
 
+	// Get row ID of the newly added message (only on success)
+	rowid = sqlite3_last_insert_rowid(db);
+
 end_of_add_message: // Close database connection
 
 	// Final database handling
 	if(stmt != NULL)
-	{
 		sqlite3_finalize(stmt);
-
-		// Get row ID of the newly added message
-		rowid = sqlite3_last_insert_rowid(db);
-	}
 
 	dbclose(&db);
 
