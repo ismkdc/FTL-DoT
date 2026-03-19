@@ -597,7 +597,7 @@ size_t dhcp_reply(struct dhcp_context *context, char *iface_name, int int_index,
       if (mess->file[0])
 	{
 	  memcpy(daemon->dhcp_buff2, mess->file, sizeof(mess->file));
-	  daemon->dhcp_buff2[sizeof(mess->file) + 1] = 0; /* ensure zero term. */
+	  daemon->dhcp_buff2[sizeof(mess->file)] = 0; /* ensure zero term. */
 	  id.net = (char *)daemon->dhcp_buff2;
 	  id.next = netid;
 	  netid = &id;
