@@ -594,36 +594,39 @@ void resolve_regex_cnames(void)
 			hints.ai_socktype = SOCK_STREAM;
 
 			// Resolve CNAME target to IPv4 address using getaddrinfo()
-			struct addrinfo *result;
-			if(getaddrinfo(regex[index].ext.cname_target, NULL, &hints, &result) == 0 && result->ai_family == AF_INET)
+			struct addrinfo *result = NULL;
+			if(getaddrinfo(regex[index].ext.cname_target, NULL, &hints, &result) == 0)
 			{
-				regex[index].ext.custom_ip4 = true;
-				struct sockaddr_in *addr_in = (void *)result->ai_addr;
-				memcpy(&regex[index].ext.addr4, &addr_in->sin_addr, sizeof(regex[index].ext.addr4));
-				char buffer[INET_ADDRSTRLEN];
-				log_debug(DEBUG_REGEX, "Resolved CNAME target \"%s\" to IPv4 address %s for regex filter %i",
-				          regex[index].ext.cname_target, inet_ntop(AF_INET, &regex[index].ext.addr4, buffer, INET_ADDRSTRLEN), regex[index].database_id);
+				if(result->ai_family == AF_INET)
+				{
+					regex[index].ext.custom_ip4 = true;
+					struct sockaddr_in *addr_in = (void *)result->ai_addr;
+					memcpy(&regex[index].ext.addr4, &addr_in->sin_addr, sizeof(regex[index].ext.addr4));
+					char buffer[INET_ADDRSTRLEN];
+					log_debug(DEBUG_REGEX, "Resolved CNAME target \"%s\" to IPv4 address %s for regex filter %i",
+					          regex[index].ext.cname_target, inet_ntop(AF_INET, &regex[index].ext.addr4, buffer, INET_ADDRSTRLEN), regex[index].database_id);
+				}
+				freeaddrinfo(result);
 			}
-
-			// Free result
-			freeaddrinfo(result);
 
 			// Prepare hints for getaddrinfo()
 			hints.ai_family = AF_INET6;
 
 			// Resolve CNAME target to IPv6 address using getaddrinfo()
-			if(getaddrinfo(regex[index].ext.cname_target, NULL, &hints, &result) == 0 && result->ai_family == AF_INET6)
+			result = NULL;
+			if(getaddrinfo(regex[index].ext.cname_target, NULL, &hints, &result) == 0)
 			{
-				regex[index].ext.custom_ip6 = true;
-				struct sockaddr_in6 *addr_in = (void *)(result->ai_addr);
-				memcpy(&regex[index].ext.addr6, &addr_in->sin6_addr, sizeof(regex[index].ext.addr6));
-				char buffer[INET6_ADDRSTRLEN];
-				log_debug(DEBUG_REGEX, "Resolved CNAME target \"%s\" to IPv6 address %s for regex filter %i",
-				          regex[index].ext.cname_target, inet_ntop(AF_INET6, &regex[index].ext.addr6, buffer, INET6_ADDRSTRLEN), regex[index].database_id);
+				if(result->ai_family == AF_INET6)
+				{
+					regex[index].ext.custom_ip6 = true;
+					struct sockaddr_in6 *addr_in = (void *)(result->ai_addr);
+					memcpy(&regex[index].ext.addr6, &addr_in->sin6_addr, sizeof(regex[index].ext.addr6));
+					char buffer[INET6_ADDRSTRLEN];
+					log_debug(DEBUG_REGEX, "Resolved CNAME target \"%s\" to IPv6 address %s for regex filter %i",
+					          regex[index].ext.cname_target, inet_ntop(AF_INET6, &regex[index].ext.addr6, buffer, INET6_ADDRSTRLEN), regex[index].database_id);
+				}
+				freeaddrinfo(result);
 			}
-
-			// Free result
-			freeaddrinfo(result);
 		}
 	}
 }
