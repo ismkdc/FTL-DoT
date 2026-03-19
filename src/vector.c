@@ -29,7 +29,7 @@ sqlite3_stmt_vec *new_sqlite3_stmt_vec(unsigned int initial_size)
 	// Initialize vector
 	v->capacity = initial_size;
 	// Calloc ensures they are all set to zero which is the default state
-	v->items = calloc(initial_size, sizeof(sqlite3_stmt *) * initial_size);
+	v->items = calloc(initial_size, sizeof(sqlite3_stmt *));
 	// Set correct subroutine pointers
 	v->set = set_sqlite3_stmt_vec;
 	v->get = get_sqlite3_stmt_vec;
