@@ -1091,7 +1091,7 @@ static bool add_local_interfaces_to_network_table(sqlite3 *db, time_t now, unsig
 {
 	// Return early if database is known to be broken
 	if(FTLDBerror())
-		return SQLITE_ERROR;
+		return false;
 
 	log_debug(DEBUG_ARP, "Network table: Adding local interfaces to network table");
 	cJSON *links = cJSON_CreateArray();
