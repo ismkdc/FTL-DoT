@@ -788,7 +788,7 @@ update_netDB_interface_end:
 	if(query_stmt != NULL)
 		sqlite3_finalize(query_stmt);
 
-	return true;
+	return success;
 }
 
 // Loop over all clients known to FTL and ensure we add them all to the database
