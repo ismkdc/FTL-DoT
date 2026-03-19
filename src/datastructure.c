@@ -1349,7 +1349,7 @@ void _query_set_status(queriesData *query, const enum query_status new_status, c
 	if(!init)
 	{
 		counters->status[old_status]--;
-		log_debug(DEBUG_STATUS, "status %d removed (!init), ID = %d, new count = %u", QUERY_UNKNOWN, query->id, counters->status[QUERY_UNKNOWN]);
+		log_debug(DEBUG_STATUS, "status %d removed (!init), ID = %d, new count = %u", old_status, query->id, counters->status[old_status]);
 	}
 	counters->status[new_status]++;
 	log_debug(DEBUG_STATUS, "status %d set, ID = %d, new count = %u", new_status, query->id, counters->status[new_status]);
