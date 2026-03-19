@@ -509,10 +509,12 @@ bool delete_message(cJSON *ids, int *deleted)
 	if(sqlite3_prepare_v2(db, "DELETE FROM message WHERE id = ?;", -1, &res, 0) != SQLITE_OK)
 	{
 		log_err("SQL error (%i): %s", sqlite3_errcode(db), sqlite3_errmsg(db));
+		dbclose(&db);
 		return false;
 	}
 
 	// Loop over id in ids array
+	bool success = true;
 	cJSON *id = NULL;
 	cJSON_ArrayForEach(id, ids)
 	{
@@ -524,7 +526,8 @@ bool delete_message(cJSON *ids, int *deleted)
 		if(sqlite3_step(res) != SQLITE_DONE)
 		{
 			log_err("SQL error (%i): %s", sqlite3_errcode(db), sqlite3_errmsg(db));
-			return false;
+			success = false;
+			break;
 		}
 
 		// Add to deleted count
@@ -537,7 +540,7 @@ bool delete_message(cJSON *ids, int *deleted)
 	// Close database connection
 	dbclose(&db);
 
-	return true;
+	return success;
 }
 
 static void format_regex_message(char *plain, const int sizeof_plain, char *html, const int sizeof_html, const char *type, const char *regex, const char *warning, const int dbindex)
@@ -974,6 +977,7 @@ static void format_gravity_restored_message(char *plain, const int sizeof_plain,
 			return;
 
 		if(snprintf(html, sizeof_html, "Gravity database damaged, restore attempt <strong class=\"log-green\">successful</strong><br>The gravity database was restored using the automatic backup created on %s<br><br>Please check your filesystem for corruption, and your disk space for availability.", escaped_status) > sizeof_html)
+			log_warn("format_gravity_restored_message(): Buffer too small to hold HTML message, warning truncated");
 
 		free(escaped_status);
 	}
