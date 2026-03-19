@@ -1432,7 +1432,10 @@ void parse_neighbor_cache(sqlite3 *db)
 			{
 				clientsData *client = getClient(clientID, true);
 				if(!client)
+				{
+					unlock_shm();
 					continue;
+				}
 
 				// Client is known to Pi-hole, update properties
 				// with their real values
