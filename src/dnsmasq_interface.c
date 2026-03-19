@@ -2258,7 +2258,7 @@ static void update_upstream(queriesData *query, const int id)
 	if(upstreamID != query->upstreamID)
 	{
 		// Debug output
-		if(config.debug.queries.v.b && query->upstreamID > 0)
+		if(config.debug.queries.v.b && query->upstreamID > -1)
 		{
 			const upstreamsData *upstream = getUpstream(query->upstreamID, true);
 			if(upstream)
@@ -2751,7 +2751,7 @@ static enum query_status detect_blocked_IP(const unsigned short flags, const uni
 static void query_blocked(queriesData *query, domainsData *domain, clientsData *client, const enum query_status new_status)
 {
 	// Adjust counters if we recorded a non-blocking status
-	if(query->status == QUERY_FORWARDED && query->upstreamID > 0)
+	if(query->status == QUERY_FORWARDED && query->upstreamID > -1)
 	{
 		// Get forward pointer
 		upstreamsData *upstream = getUpstream(query->upstreamID, true);
