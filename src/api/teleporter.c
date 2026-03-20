@@ -330,6 +330,7 @@ static int process_received_zip(struct ftl_conn *api, struct upload_data *data)
 			strcat(msg, hint);
 		}
 		free_upload_data(data);
+		cJSON_Delete(json_files);
 		return send_json_error_free(api, 400,
 		                            "bad_request",
 		                            "Invalid request",
