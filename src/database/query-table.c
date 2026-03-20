@@ -918,6 +918,8 @@ bool export_queries_to_disk(const bool final)
 		if((rc = sqlite3_bind_double(queries_to_disk_stmt, 1, time)) != SQLITE_OK)
 		{
 			log_err("export_queries_to_disk(): Failed to bind time: %s", sqlite3_errstr(rc));
+			sqlite3_reset(queries_to_disk_stmt);
+			sqlite3_exec(memdb, "ROLLBACK", NULL, NULL, NULL);
 			return false;
 		}
 
