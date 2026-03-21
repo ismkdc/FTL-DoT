@@ -135,8 +135,9 @@ static struct {
 	if(config.debug.performance.v.b) { \
 		struct timespec _pe; \
 		clock_gettime(CLOCK_MONOTONIC, &_pe); \
-		const uint64_t _us = (uint64_t)(_pe.tv_sec - (ts_var).tv_sec) * 1000000u \
-		                   + (uint64_t)(_pe.tv_nsec - (ts_var).tv_nsec) / 1000u; \
+		const int64_t _ns = (int64_t)(_pe.tv_sec - (ts_var).tv_sec) * 1000000000LL \
+		                  + (int64_t)(_pe.tv_nsec - (ts_var).tv_nsec); \
+		const uint64_t _us = (uint64_t)(_ns / 1000); \
 		query_perf[(slot)].calls++; \
 		query_perf[(slot)].total_us += _us; \
 		if(_us > query_perf[(slot)].max_us) query_perf[(slot)].max_us = _us; \

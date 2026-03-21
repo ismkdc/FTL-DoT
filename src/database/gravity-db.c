@@ -84,8 +84,9 @@ do { \
 		clock_gettime(CLOCK_MONOTONIC, &_ts0); \
 		(result_var) = (call_expr); \
 		clock_gettime(CLOCK_MONOTONIC, &_ts1); \
-		const uint64_t _us = (uint64_t)(_ts1.tv_sec - _ts0.tv_sec) * 1000000u \
-		                   + (uint64_t)(_ts1.tv_nsec - _ts0.tv_nsec) / 1000u; \
+		const int64_t _ns = (int64_t)(_ts1.tv_sec - _ts0.tv_sec) * 1000000000LL \
+		                  + (int64_t)(_ts1.tv_nsec - _ts0.tv_nsec); \
+		const uint64_t _us = (uint64_t)(_ns / 1000); \
 		gravity_perf[(slot)].calls++; \
 		gravity_perf[(slot)].total_us += _us; \
 		if(_us > gravity_perf[(slot)].max_us) gravity_perf[(slot)].max_us = _us; \
