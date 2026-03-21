@@ -56,8 +56,8 @@ void strcpy_tolower(char *dst, const char *src, size_t dstsize)
 }
 
 /**
- * @brief Computes a hash value for a given string using Jenkins' One-at-a-Time
- * hash algorithm.
+ * @brief Computes a hash value for a given string using the FNV-1a hash
+ * algorithm.
  *
  * This function is marked as pure, indicating that it has no side effects and
  * its return value depends only on the input parameters.
@@ -65,26 +65,25 @@ void strcpy_tolower(char *dst, const char *src, size_t dstsize)
  * @param s The input string to be hashed.
  * @return The computed hash value as a 32-bit unsigned integer.
  *
- * @note Jenkins' One-at-a-Time hash is a simple and effective hash function for
- *       strings. More details can be found at:
- *       http://www.burtleburtle.net/bob/hash/doobs.html
+ * @note FNV-1a (Fowler-Noll-Vo) is a non-cryptographic hash function with good
+ *       distribution for short ASCII strings such as domain names and IP
+ *       addresses. It uses 2 dependent operations per byte (xor + multiply)
+ *       with no finalization step, making it faster than Jenkins' One-at-a-Time
+ *       (3 ops/byte + 3-op finalization) for the typical input lengths seen in
+ *       DNS resolution. More details can be found at:
+ *       http://www.isthe.com/chongo/tech/comp/fnv/
  */
 uint32_t __attribute__ ((pure)) hashStr(const char *s)
 {
-	// Jenkins' One-at-a-Time hash (optimized version)
-	// (http://www.burtleburtle.net/bob/hash/doobs.html)
-	uint32_t hash = 0;
+	// FNV-1a hash: XOR each byte into the hash, then multiply by the FNV
+	// prime. The offset basis and prime are defined by the FNV specification
+	// for 32-bit hashes.
+	uint32_t hash = 2166136261u; // FNV offset basis
 	for(; *s; ++s)
 	{
-		hash += *s;
-		hash += hash << 10;
-		hash ^= hash >> 6;
+		hash ^= (unsigned char)*s;
+		hash *= 16777619u; // FNV prime
 	}
-
-	// Final mixing to ensure good distribution
-	hash += hash << 3;
-	hash ^= hash >> 11;
-	hash += hash << 15;
 	return hash;
 }
 
