@@ -1327,7 +1327,7 @@ void _query_set_status(queriesData *query, const enum query_status new_status, c
 			    new_status == QUERY_EXTERNAL_BLOCKED_EDE15))
 			{
 				// Set expiration time for this cache entry
-				dns_cache->expires = (time_t)query->timestamp + config.dns.cache.upstreamBlockedTTL.v.ui;
+				dns_cache->expires = ABS_TO_SHM_TIME((time_t)query->timestamp + config.dns.cache.upstreamBlockedTTL.v.ui);
 			}
 
 			if(config.debug.queries.v.b)
@@ -1342,7 +1342,7 @@ void _query_set_status(queriesData *query, const enum query_status new_status, c
 				{
 					log_debug(DEBUG_QUERIES, "DNS cache: %s/%s/%s -> %s, expires in %lis",
 					          qtype, clientstr, domain, statusstr,
-					          (long)(dns_cache->expires - time(NULL)));
+					          (long)(SHM_TO_ABS_TIME(dns_cache->expires) - time(NULL)));
 				}
 				else
 				{

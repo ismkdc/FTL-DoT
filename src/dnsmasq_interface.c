@@ -95,7 +95,7 @@ static char *hostname_suffix = NULL;
 static size_t pihole_suffix_len = 0;
 static size_t hostname_suffix_len = 0;
 static size_t hostname_len = 0;
-static char *cname_target = NULL;
+static const char *cname_target = NULL;
 
 // FTL DNS cache hit/miss counters.
 // A "hit" means the (domain, client, query-type) tuple was already in FTL's
@@ -1536,7 +1536,9 @@ static bool check_domain_blocked(const char *domain,
 		// Regex may be overwriting reply type for this domain
 		if(dns_cache->force_reply != REPLY_UNKNOWN)
 			force_next_DNS_reply = dns_cache->force_reply;
-		cname_target = dns_cache->cname_target;
+		// Retrieve CNAME target from the shared string pool (O(1)).
+		// cname_strpos == 0 means no CNAME target is set.
+		cname_target = (dns_cache->cname_strpos > 0) ? getstr(dns_cache->cname_strpos) : NULL;
 
 		// Store ID of this regex (fork-private)
 		last_regex_idx = dns_cache->list_id;
@@ -1647,7 +1649,7 @@ static bool FTL_check_blocking(const char *domainstr, queriesData *query, client
 
 	// If this cache record can expire, check if it is still valid and/or if
 	// caching is generally disabled
-	if((dns_cache->expires > 0 && dns_cache->expires < (time_t)query->timestamp) ||
+	if((dns_cache->expires > 0 && ABS_TO_SHM_TIME((time_t)query->timestamp) > dns_cache->expires) ||
 	    config.dns.cache.upstreamBlockedTTL.v.ui == 0)
 	{
 		// This cache record is expired or caching is disabled, we have
@@ -1826,7 +1828,7 @@ static bool FTL_check_blocking(const char *domainstr, queriesData *query, client
 			// Known as upstream blocked, we return this result
 			// early, skipping all the lengthy tests below
 			log_debug(DEBUG_QUERIES, "%s is known as %s (expires in %lus)",
-			          domainstr, blockingreason, (unsigned long)(dns_cache->expires - (time_t)query->timestamp));
+			          domainstr, blockingreason, (unsigned long)(SHM_TO_ABS_TIME(dns_cache->expires) - (time_t)query->timestamp));
 
 			force_next_DNS_reply = dns_cache->force_reply;
 			query_blocked(query, domain, client, blocking_status);

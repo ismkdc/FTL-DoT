@@ -15,6 +15,14 @@
 #include <fcntl.h>           /* For O_* constants */
 #include <stdbool.h>
 
+// Fixed epoch for DNSCacheData::expires (stored as uint32_t offset from this
+// value). Chosen to be recent enough that the offset fits comfortably in
+// uint32_t until ~2160, avoiding the Y2038 problem on all supported platforms.
+#define SHM_TIME_EPOCH 1751328000u  // 2026-01-01 00:00:00 UTC
+// Convert between absolute time_t and the stored uint32_t offset
+#define ABS_TO_SHM_TIME(t) ((uint32_t)((time_t)(t) - (time_t)SHM_TIME_EPOCH))
+#define SHM_TO_ABS_TIME(t) ((time_t)(t) + (time_t)SHM_TIME_EPOCH)
+
 // TYPE_MAX
 #include "datastructure.h"
 

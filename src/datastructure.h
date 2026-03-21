@@ -124,6 +124,24 @@ typedef struct {
 } domainsData;
 
 typedef struct {
+	// Fields ordered by alignment (4-byte, then 1-byte) to eliminate
+	// padding. No pointer or size_t fields -> identical 36-byte layout on
+	// all architectures (32-bit armhf, aarch64, x86, x86_64).
+	unsigned int domainID;
+	unsigned int clientID;
+	unsigned int CNAME_domainID; // only valid if query has a CNAME blocking status
+	int list_id;
+	int refcount;
+	uint32_t hash;
+	// Stored as seconds since SHM_TIME_EPOCH (see shmem.h). Avoids the
+	// Y2038 problem: valid until ~2160 on all supported platforms. Ther
+	// reference timestamp may easily be changed in the future if needed
+	// without side-effects.
+	uint32_t expires;
+	// Position of the regex CNAME target string in the shared string pool
+	// (0 = no CNAME target)
+	uint32_t cname_strpos;
+	// 1-byte fields at end to avoid padding before the 4-byte fields above
 	unsigned char magic;
 	struct {
 		bool allowed :1;
@@ -131,14 +149,6 @@ typedef struct {
 	enum query_status blocking_status;
 	enum reply_type force_reply;
 	enum query_type query_type;
-	unsigned int domainID;
-	unsigned int clientID;
-	unsigned int CNAME_domainID; // only valid if query has a CNAME blocking status
-	int list_id;
-	int refcount;
-	uint32_t hash;
-	time_t expires;
-	char *cname_target;
 } DNSCacheData;
 
 struct lookup_data {
