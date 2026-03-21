@@ -722,7 +722,7 @@ static bool get_client_groupids(clientsData *client)
 	// (the client is not configured through the client table)
 	if(chosen_match_id < 0)
 	{
-		log_debug(DEBUG_CLIENTS, "Gravity database: Client %s not found. Using default group.\n",
+		log_debug(DEBUG_CLIENTS, "Gravity database: Client %s not found. Using default group.",
 		          show_client_string(hwaddr, hostname, ip));
 
 		client->groupspos = addstr("0");
