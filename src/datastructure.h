@@ -20,13 +20,12 @@
 #include "FTL.h"
 
 typedef struct {
-	unsigned char magic;
-	enum query_status status;
-	enum query_type type;
-	enum privacy_level privacylevel;
-	enum reply_type reply;
-	enum dnssec_status dnssec;
-	uint16_t qtype;
+	// Fields are ordered by alignment (8-byte, 4-byte, 2-byte, 1-byte) to
+	// eliminate padding. This reduces struct size from 72 to 64 bytes,
+	// saving ~2.4 MB per 300K queries.
+	double response;
+	double timestamp;
+	sqlite3_int64 db;
 	unsigned int domainID;
 	unsigned int clientID;
 	int upstreamID; // -1 if not forwarded
@@ -34,9 +33,13 @@ typedef struct {
 	int id; // the ID is a (signed) int in dnsmasq, so no need for a long int here
 	int CNAME_domainID; // only valid if query has a CNAME blocking status, -1 otherwise
 	int ede;
-	double response;
-	double timestamp;
-	sqlite3_int64 db;
+	uint16_t qtype;
+	unsigned char magic;
+	enum query_status status;
+	enum query_type type;
+	enum privacy_level privacylevel;
+	enum reply_type reply;
+	enum dnssec_status dnssec;
 	// Adjacent bit field members in the struct flags may be packed to share
 	// and straddle the individual bytes. It is useful to pack the memory as
 	// tightly as possible as there may be dozens of thousands of these
@@ -92,7 +95,6 @@ typedef struct {
 	unsigned int id;
 	unsigned int rate_limit;
 	unsigned int numQueriesARP;
-	int overTime[OVERTIME_SLOTS];
 	uint32_t hash;
 	size_t groupspos;
 	size_t ippos;
@@ -100,6 +102,10 @@ typedef struct {
 	size_t ifacepos;
 	double firstSeen;
 	double lastQuery;
+	// overTime is accessed only every 10 minutes (cold), so it lives at the
+	// end to keep hot fields (hash, ippos, groupspos, lastQuery) within the
+	// first ~104 bytes (2 cache lines) for better CPU cache locality.
+	int overTime[OVERTIME_SLOTS];
 } clientsData;
 
 typedef struct {
