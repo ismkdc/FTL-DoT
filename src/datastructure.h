@@ -20,9 +20,11 @@
 #include "FTL.h"
 
 typedef struct {
-	// Fields are ordered by alignment (8-byte, 4-byte, 2-byte, 1-byte) to
-	// eliminate padding. This reduces struct size from 72 to 64 bytes,
-	// saving ~2.4 MB per 300K queries.
+	// Fields ordered by alignment (8-byte, 4-byte, 2-byte, 1-byte) to
+	// eliminate padding, reducing struct size from 72 to 64 bytes (~2.4 MB
+	// saved per 300K queries). No size_t or pointer fields -> identical
+	// 64-byte layout on all architectures (32-bit armhf, aarch64, x86,
+	// x86_64).
 	double response;
 	double timestamp;
 	sqlite3_int64 db;
@@ -43,9 +45,9 @@ typedef struct {
 	// Adjacent bit field members in the struct flags may be packed to share
 	// and straddle the individual bytes. It is useful to pack the memory as
 	// tightly as possible as there may be dozens of thousands of these
-	// objects in memory (one per query).
-	// C99 guarantees that bit-fields will be packed as tightly as possible,
-	// provided they don't cross storage unit boundaries (6.7.2.1 #10).
+	// objects in memory (one per query). C99 guarantees that bit-fields
+	// will be packed as tightly as possible, provided they don't cross
+	// storage unit boundaries (6.7.2.1 #10).
 	struct query_flags {
 		bool allowed :1;
 		bool complete :1;
@@ -59,6 +61,12 @@ typedef struct {
 } queriesData;
 
 typedef struct {
+	// Contains size_t and double fields -> size differs by architecture
+	// (64-bit: 64 bytes with 4 bytes internal padding before ippos; 32-bit:
+	// ~52 bytes, no padding). The whole struct fits in exactly one 64-byte
+	// cache line, so internal padding has no cache impact. Total size
+	// cannot be reduced below 64 bytes (struct alignment requires a
+	// multiple of 8).
 	unsigned char magic;
 	struct upstream_flags {
 		bool new:1;
@@ -77,6 +85,14 @@ typedef struct {
 } upstreamsData;
 
 typedef struct {
+	// Hot fields ordered first for cache locality; cold overTime[] array at
+	// end. Contains size_t fields -> size differs by architecture (64-bit:
+	// 684 bytes for OVERTIME_SLOTS=145; 32-bit: ~668 bytes).
+	// On 64-bit, 4 bytes between hash (offset 48) and groupspos (offset
+	// 56) are intentional alignment padding: they ensure ippos lands at
+	// offset 64, the start of cache line 1. Without them, ippos would be
+	// at offset 60 and straddle the cache line boundary (bytes 60–67),
+	// causing a split load on every client IP comparison.
 	unsigned char magic;
 	unsigned char reread_groups;
 	char hwlen;
@@ -103,12 +119,19 @@ typedef struct {
 	double firstSeen;
 	double lastQuery;
 	// overTime is accessed only every 10 minutes (cold), so it lives at the
-	// end to keep hot fields (hash, ippos, groupspos, lastQuery) within the
-	// first ~104 bytes (2 cache lines) for better CPU cache locality.
+	// end to keep hot fields within the first two 64-byte cache lines:
+	// line 0 (0–63): magic...hash + groupspos; line 1 (64–127): ippos...lastQuery.
 	int overTime[OVERTIME_SLOTS];
 } clientsData;
 
 typedef struct {
+	// Contains size_t and double fields -> size differs by architecture
+	// (64-bit: 48 bytes; 32-bit: ~40 bytes). The whole struct fits in a
+	// single 64-byte cache line, so internal padding (6 bytes on 64-bit: 2
+	// before count and 4 before domainpos) has no cache impact.
+	// Reordering to put 4-byte fields first would eliminate internal
+	// padding but cannot reduce total size below 48 bytes (struct alignment
+	// requires a multiple of 8).
 	unsigned char magic;
 	struct domain_flags {
 		bool in_database:1;
@@ -134,7 +157,7 @@ typedef struct {
 	int refcount;
 	uint32_t hash;
 	// Stored as seconds since SHM_TIME_EPOCH (see shmem.h). Avoids the
-	// Y2038 problem: valid until ~2160 on all supported platforms. Ther
+	// Y2038 problem: valid until ~2160 on all supported platforms. The
 	// reference timestamp may easily be changed in the future if needed
 	// without side-effects.
 	uint32_t expires;
