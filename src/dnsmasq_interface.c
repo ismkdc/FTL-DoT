@@ -104,6 +104,45 @@ static char *cname_target = NULL;
 static uint64_t ftl_cache_hits = 0;
 static uint64_t ftl_cache_misses = 0;
 
+// Hot-path performance statistics (gated by debug.performance).
+// Tracks per-component latency within FTL_new_query() and FTL_reply().
+// All updates happen under the SHM lock, so no atomics are needed.
+// Counters are reset each time FTL_dump_cache_stats() is called (every 5 min).
+#define PERF_STAT_NEW_QUERY      0  // Total FTL_new_query() under SHM lock
+#define PERF_STAT_FIND_CLIENT    1  // findClientID() hash lookup
+#define PERF_STAT_FIND_DOMAIN    2  // findDomainID() hash lookup
+#define PERF_STAT_CHECK_BLOCKING 3  // FTL_check_blocking() total
+#define PERF_STAT_REPLY          4  // FTL_reply() under SHM lock
+#define PERF_STAT_COUNT          5
+
+static struct {
+	uint64_t calls;    // number of invocations
+	uint64_t total_us; // cumulative microseconds
+	uint64_t max_us;   // single-call maximum in us
+	uint64_t slow;     // calls that took more than 1 ms
+} query_perf[PERF_STAT_COUNT];
+
+// Start a performance measurement. Declares and fills ts_var with the
+// current CLOCK_MONOTONIC time. No-op when debug.performance is disabled.
+#define PERF_START(ts_var) \
+	struct timespec ts_var = {0}; \
+	if(config.debug.performance.v.b) \
+		clock_gettime(CLOCK_MONOTONIC, &(ts_var))
+
+// End a performance measurement and accumulate into the given slot.
+// No-op when debug.performance is disabled.
+#define PERF_END(ts_var, slot) \
+	if(config.debug.performance.v.b) { \
+		struct timespec _pe; \
+		clock_gettime(CLOCK_MONOTONIC, &_pe); \
+		const uint64_t _us = (uint64_t)(_pe.tv_sec - (ts_var).tv_sec) * 1000000u \
+		                   + (uint64_t)(_pe.tv_nsec - (ts_var).tv_nsec) / 1000u; \
+		query_perf[(slot)].calls++; \
+		query_perf[(slot)].total_us += _us; \
+		if(_us > query_perf[(slot)].max_us) query_perf[(slot)].max_us = _us; \
+		if(_us > 1000u) query_perf[(slot)].slow++; \
+	}
+
 #define HOSTNAME "Pi-hole hostname"
 
 // Fork-private copy of the interface data the most recent query came from
@@ -137,6 +176,34 @@ void FTL_dump_cache_stats(void)
 	// Reset counters for the next 5-minute window
 	ftl_cache_hits = 0;
 	ftl_cache_misses = 0;
+
+	// Dump per-component hot-path latency statistics
+	static const char * const perf_names[PERF_STAT_COUNT] = {
+		"new_query (total under lock)",
+		"findClientID",
+		"findDomainID",
+		"check_blocking",
+		"reply (total under lock)",
+	};
+	for(unsigned int i = 0; i < PERF_STAT_COUNT; i++)
+	{
+		if(query_perf[i].calls == 0)
+		{
+			log_debug(DEBUG_PERFORMANCE, "Query perf [%s]: no calls in last 5 minutes", perf_names[i]);
+			continue;
+		}
+		log_debug(DEBUG_PERFORMANCE, "Query perf [%s]: %"PRIu64" calls, "
+		          "avg %.1f us, max %.1f us, "
+		          "%"PRIu64" slow (>1ms, %.1f%%)",
+		          perf_names[i],
+		          query_perf[i].calls,
+		          (double)query_perf[i].total_us / (double)query_perf[i].calls,
+		          (double)query_perf[i].max_us,
+		          query_perf[i].slow,
+		          100.0 * (double)query_perf[i].slow / (double)query_perf[i].calls);
+	}
+	// Reset counters for the next 5-minute window
+	memset(query_perf, 0, sizeof(query_perf));
 }
 
 const char *flagnames[] = {"F_IMMORTAL ", "F_NAMEP ", "F_REVERSE ", "F_FORWARD ", "F_DHCP ", "F_NEG ", "F_HOSTS ", "F_IPV4 ", "F_IPV6 ", "F_BIGNAME ", "F_NXDOMAIN ", "F_CNAME ", "F_DNSKEY ", "F_CONFIG ", "F_DS ", "F_DNSSECOK ", "F_UPSTREAM ", "F_RRNAME ", "F_SERVER ", "F_QUERY ", "F_NOERR ", "F_AUTH ", "F_DNSSEC ", "F_KEYTAG ", "F_SECSTAT ", "F_NO_RR ", "F_IPSET ", "F_NOEXTRA ", "F_DOMAINSRV", "F_RCODE", "F_RR", "F_STALE" };
@@ -788,10 +855,13 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 
 	// Lock shared memory
 	lock_shm();
+	PERF_START(_pnq);
 	const int queryID = counters->queries;
 
 	// Find client IP
+	PERF_START(_pfc);
 	const int clientID = findClientID(clientIP, true, false, querytimestamp);
+	PERF_END(_pfc, PERF_STAT_FIND_CLIENT);
 
 	// Get client pointer
 	clientsData *client = getClient(clientID, true);
@@ -883,7 +953,9 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	}
 
 	// Go through already knows domains and see if it is one of them
+	PERF_START(_pfd);
 	const int domainID = findDomainID(domainString, true);
+	PERF_END(_pfd, PERF_STAT_FIND_DOMAIN);
 
 	// Save everything
 	queriesData *query = getQuery(queryID, false);
@@ -1049,11 +1121,16 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// Check if this should be blocked only for active queries
 	// (skipped for internally generated ones, e.g., DNSSEC)
 	if(!internal_query && querytype != TYPE_NONE)
+	{
+		PERF_START(_pcb);
 		blockDomain = FTL_check_blocking(domainString, query, client, domain, dns_cache_entry);
+		PERF_END(_pcb, PERF_STAT_CHECK_BLOCKING);
+	}
 
 	// Store query in database
 	query->flags.database.changed = true;
 
+	PERF_END(_pnq, PERF_STAT_NEW_QUERY);
 	// Release thread lock
 	unlock_shm();
 
@@ -2339,6 +2416,7 @@ static void FTL_reply(const unsigned int flags, const char *name, const union al
 
 	// Lock shared memory
 	lock_shm();
+	PERF_START(_prp);
 
 	// Save status in corresponding query identified by dnsmasq's ID
 	const int queryID = findQueryID(id);
@@ -2701,6 +2779,7 @@ static void FTL_reply(const unsigned int flags, const char *name, const union al
 		query_set_dnssec(query, adbit ? DNSSEC_SECURE : DNSSEC_INSECURE);
 	}
 
+	PERF_END(_prp, PERF_STAT_REPLY);
 	unlock_shm();
 }
 
