@@ -188,6 +188,8 @@ const char *_getstr(const size_t pos, const char *func, const int line, const ch
 size_t _addintarray(const int32_t *ids, int count, const char *func, const int line, const char *file);
 #define getintarray(pos, count) _getintarray(pos, count, __FUNCTION__, __LINE__, __FILE__)
 const int32_t *_getintarray(const size_t pos, int *count, const char *func, const int line, const char *file);
+// Format an int array from SHM as comma-separated string for logging
+const char *fmt_intarray(const size_t pos, char *buf, const size_t bufsz);
 
 /**
  * Create a new overTime client shared memory block.

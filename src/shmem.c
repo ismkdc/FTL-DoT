@@ -512,6 +512,30 @@ const int32_t *_getintarray(const size_t pos, int *count, const char *func, cons
 	return n > 0 ? &pool[pos + 1] : NULL;
 }
 
+// Format an int array from SHM as a comma-separated string for logging.
+// Writes into the caller-provided buffer and returns it.
+const char *fmt_intarray(const size_t pos, char *buf, const size_t bufsz)
+{
+	int count = 0;
+	const int32_t *ids = _getintarray(pos, &count, __FUNCTION__, __LINE__, __FILE__);
+	if(ids == NULL || count == 0)
+	{
+		if(bufsz > 0)
+			buf[0] = '\0';
+		return buf;
+	}
+
+	size_t p = 0;
+	for(int i = 0; i < count && p + 13 < bufsz; i++)
+	{
+		if(i > 0)
+			buf[p++] = ',';
+		p += (size_t)snprintf(buf + p, bufsz - p, "%d", (int)ids[i]);
+	}
+	buf[p] = '\0';
+	return buf;
+}
+
 // Create a mutex for shared memory
 static void create_mutex(pthread_mutex_t *lock) {
 	log_debug(DEBUG_SHMEM, "Creating SHM mutex lock");

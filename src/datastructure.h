@@ -112,15 +112,17 @@ typedef struct {
 	unsigned int rate_limit;
 	unsigned int numQueriesARP;
 	uint32_t hash;
-	size_t groupspos;
+	size_t groupspos; // SHM intarray: client's assigned group IDs
 	size_t ippos;
 	size_t namepos;
 	size_t ifacepos;
+	size_t gravity_adlistpos;     // SHM intarray: eligible gravity adlist IDs
+	size_t antigravity_adlistpos; // SHM intarray: eligible antigravity adlist IDs
 	double firstSeen;
 	double lastQuery;
 	// overTime is accessed only every 10 minutes (cold), so it lives at the
 	// end to keep hot fields within the first two 64-byte cache lines:
-	// line 0 (0–63): magic...hash + groupspos; line 1 (64–127): ippos...lastQuery.
+	// line 0 (0–63): magic...hash + groupspos; line 1 (64–127): ippos...ifacepos+adlistpos.
 	int overTime[OVERTIME_SLOTS];
 } clientsData;
 

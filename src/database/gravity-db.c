@@ -50,17 +50,6 @@ static sqlite3_stmt *adlist_ids_stmt = NULL;
 static sqlite3_stmt *regex_deny_groups_stmt = NULL;
 static sqlite3_stmt *regex_allow_groups_stmt = NULL;
 
-// Per-client pre-computed adlist ID sets for gravity/antigravity.
-// Indexed by client ID. Process-local (not in SHM).
-typedef struct {
-	int32_t *ids;   // malloc'd array of eligible adlist IDs
-	int count;      // number of elements
-} adlist_id_set;
-
-static adlist_id_set *gravity_adlist_ids = NULL;
-static adlist_id_set *antigravity_adlist_ids = NULL;
-static unsigned int adlist_ids_capacity = 0;
-
 // Private variables
 static sqlite3 *gravity_db = NULL;
 static sqlite3_stmt* table_stmt = NULL;
@@ -180,11 +169,8 @@ void gravityDB_forked(void)
 	parent_regex_allow_groups_stmt = regex_allow_groups_stmt;
 	regex_allow_groups_stmt = NULL;
 
-	// Adlist ID arrays are process-local and not inherited by forks.
-	// The fork will re-compute them when it opens the gravity database.
-	gravity_adlist_ids = NULL;
-	antigravity_adlist_ids = NULL;
-	adlist_ids_capacity = 0;
+	// Adlist ID arrays are stored in SHM — accessible from forks without
+	// recomputation.
 
 	// Open the database
 	gravityDB_open();
@@ -412,27 +398,6 @@ static bool gravityDB_open(void)
 	return true;
 }
 
-// Format a client's group IDs for debug logging only.
-// Returns a static thread-local buffer.
-static const char *fmt_group_ids(const clientsData *client)
-{
-	static _Thread_local char buf[256];
-	int count = 0;
-	const int32_t *ids = getintarray(client->groupspos, &count);
-	if(ids == NULL || count == 0)
-		return "(none)";
-
-	size_t pos = 0;
-	for(int i = 0; i < count && pos < sizeof(buf) - 13; i++)
-	{
-		if(i > 0)
-			buf[pos++] = ',';
-		pos += (size_t)snprintf(buf + pos, sizeof(buf) - pos, "%d", (int)ids[i]);
-	}
-	buf[pos] = '\0';
-	return buf;
-}
-
 bool gravityDB_reopen(void)
 {
 	// We call this routine when reloading the cache.
@@ -442,18 +407,15 @@ bool gravityDB_reopen(void)
 	return gravityDB_open();
 }
 
-// Pre-compute the set of eligible adlist IDs for a client's groups.
+// Pre-compute the set of eligible adlist IDs for a client's groups
+// and store in SHM via addintarray(). Returns the SHM position (0 = empty,
+// SIZE_MAX = error).
 // adlist_type: 0 = gravity (blocking), 1 = antigravity (allowing)
-// Uses the shared adlist_ids_stmt with carray binding.
-static bool get_client_adlist_ids(const int adlist_type,
-                                  const int32_t *group_ids, int group_count,
-                                  adlist_id_set *out)
+static size_t get_client_adlist_ids(const int adlist_type,
+                                    const int32_t *group_ids, int group_count)
 {
-	out->ids = NULL;
-	out->count = 0;
-
 	if(adlist_ids_stmt == NULL)
-		return false;
+		return SIZE_MAX;
 
 	// Bind parameters: ?1 = adlist type, ?2 = group_id array
 	sqlite3_bind_int(adlist_ids_stmt, 1, adlist_type);
@@ -466,7 +428,7 @@ static bool get_client_adlist_ids(const int adlist_type,
 	if(ids == NULL)
 	{
 		sqlite3_reset(adlist_ids_stmt);
-		return false;
+		return SIZE_MAX;
 	}
 
 	int rc, count = 0;
@@ -476,41 +438,17 @@ static bool get_client_adlist_ids(const int adlist_type,
 		{
 			cap *= 2;
 			int32_t *tmp = realloc(ids, (size_t)cap * sizeof(int32_t));
-			if(tmp == NULL) { free(ids); sqlite3_reset(adlist_ids_stmt); return false; }
+			if(tmp == NULL) { free(ids); sqlite3_reset(adlist_ids_stmt); return SIZE_MAX; }
 			ids = tmp;
 		}
 		ids[count++] = sqlite3_column_int(adlist_ids_stmt, 0);
 	}
 	sqlite3_reset(adlist_ids_stmt);
 
-	out->ids = ids;
-	out->count = count;
-	return true;
-}
-
-// Ensure the per-client adlist_id vectors have room for client_id
-static bool ensure_adlist_ids_capacity(const unsigned int needed)
-{
-	if(needed <= adlist_ids_capacity)
-		return true;
-
-	const unsigned int new_cap = needed + 16;
-	adlist_id_set *g = realloc(gravity_adlist_ids, new_cap * sizeof(adlist_id_set));
-	if(g == NULL)
-		return false;
-	gravity_adlist_ids = g;
-	adlist_id_set *a = realloc(antigravity_adlist_ids, new_cap * sizeof(adlist_id_set));
-	if(a == NULL)
-		return false;
-	antigravity_adlist_ids = a;
-
-	// Zero-initialize new slots
-	memset(gravity_adlist_ids + adlist_ids_capacity, 0,
-	       (new_cap - adlist_ids_capacity) * sizeof(adlist_id_set));
-	memset(antigravity_adlist_ids + adlist_ids_capacity, 0,
-	       (new_cap - adlist_ids_capacity) * sizeof(adlist_id_set));
-	adlist_ids_capacity = new_cap;
-	return true;
+	// Store in SHM (deduplicated)
+	const size_t pos = addintarray(ids, count);
+	free(ids);
+	return pos;
 }
 
 // Determine whether to show IP or hardware address
@@ -984,12 +922,12 @@ static bool get_client_groupids(clientsData *client)
 		if(got_iface)
 		{
 			log_debug(DEBUG_CLIENTS, "Gravity database: Client %s found (identified by interface %s). Using groups (%s)",
-			          show_client_string(hwaddr, hostname, ip), interface, fmt_group_ids(client));
+			          show_client_string(hwaddr, hostname, ip), interface, fmt_intarray(client->groupspos, (char[256]){0}, 256));
 		}
 		else
 		{
 			log_debug(DEBUG_CLIENTS, "Gravity database: Client %s found. Using groups (%s)",
-			          show_client_string(hwaddr, hostname, ip), fmt_group_ids(client));
+			          show_client_string(hwaddr, hostname, ip), fmt_intarray(client->groupspos, (char[256]){0}, 256));
 		}
 	}
 
@@ -1071,33 +1009,28 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
 
 	// Pre-compute eligible adlist IDs for this client's gravity/antigravity
-	// lookups. Uses the shared adlist_ids_stmt with carray() binding.
-	if(!ensure_adlist_ids_capacity(client->id + 1))
+	// lookups and store in SHM (deduplicated via addintarray).
+	log_debug(DEBUG_DATABASE, "Pre-computing adlist IDs for client %s (groups: %s)",
+	          clientip, fmt_intarray(client->groupspos, (char[256]){0}, 256));
+
+	client->gravity_adlistpos = get_client_adlist_ids(0, group_ids, group_count);
+	if(client->gravity_adlistpos == SIZE_MAX)
 	{
-		log_err("gravityDB_prepare_client_statements(): Failed to allocate adlist ID storage");
+		client->gravity_adlistpos = 0;
 		return false;
 	}
 
-	// Free any previous arrays for this client (e.g., on group reload)
-	if(gravity_adlist_ids[client->id].ids != NULL)
+	client->antigravity_adlistpos = get_client_adlist_ids(1, group_ids, group_count);
+	if(client->antigravity_adlistpos == SIZE_MAX)
 	{
-		free(gravity_adlist_ids[client->id].ids);
-		gravity_adlist_ids[client->id].ids = NULL;
-		gravity_adlist_ids[client->id].count = 0;
-	}
-	if(antigravity_adlist_ids[client->id].ids != NULL)
-	{
-		free(antigravity_adlist_ids[client->id].ids);
-		antigravity_adlist_ids[client->id].ids = NULL;
-		antigravity_adlist_ids[client->id].count = 0;
+		client->antigravity_adlistpos = 0;
+		return false;
 	}
 
-	log_debug(DEBUG_DATABASE, "Pre-computing adlist IDs for client %s (groups: %s)",
-	          clientip, fmt_group_ids(client));
-	get_client_adlist_ids(0, group_ids, group_count, &gravity_adlist_ids[client->id]);
-	log_debug(DEBUG_DATABASE, "  gravity: %d eligible adlist IDs", gravity_adlist_ids[client->id].count);
-	get_client_adlist_ids(1, group_ids, group_count, &antigravity_adlist_ids[client->id]);
-	log_debug(DEBUG_DATABASE, "  antigravity: %d eligible adlist IDs", antigravity_adlist_ids[client->id].count);
+	log_debug(DEBUG_DATABASE, "  gravity adlist IDs: %s",
+	          fmt_intarray(client->gravity_adlistpos, (char[256]){0}, 256));
+	log_debug(DEBUG_DATABASE, "  antigravity adlist IDs: %s",
+	          fmt_intarray(client->antigravity_adlistpos, (char[256]){0}, 256));
 
 	return true;
 }
@@ -1107,16 +1040,9 @@ static inline void gravityDB_finalize_client_statements(clientsData *client)
 {
 	log_debug(DEBUG_DATABASE, "Finalizing gravity data for %s", getstr(client->ippos));
 
-	// Free per-client adlist ID arrays (all statements are shared now)
-	if(client->id < adlist_ids_capacity)
-	{
-		free(gravity_adlist_ids[client->id].ids);
-		gravity_adlist_ids[client->id].ids = NULL;
-		gravity_adlist_ids[client->id].count = 0;
-		free(antigravity_adlist_ids[client->id].ids);
-		antigravity_adlist_ids[client->id].ids = NULL;
-		antigravity_adlist_ids[client->id].count = 0;
-	}
+	// Reset adlist ID positions (stored in SHM, freed on gravity close)
+	client->gravity_adlistpos = 0;
+	client->antigravity_adlistpos = 0;
 
 	// Unset group found property to trigger a check next time the
 	// client sends a query
@@ -1154,25 +1080,8 @@ void gravityDB_close(void)
 		}
 	}
 
-	// Free per-client adlist ID arrays (may be NULL in TCP forks)
-	for(unsigned int i = 0; i < adlist_ids_capacity; i++)
-	{
-		if(gravity_adlist_ids != NULL && gravity_adlist_ids[i].ids != NULL)
-			free(gravity_adlist_ids[i].ids);
-		if(antigravity_adlist_ids != NULL && antigravity_adlist_ids[i].ids != NULL)
-			free(antigravity_adlist_ids[i].ids);
-	}
-	if(gravity_adlist_ids != NULL)
-	{
-		free(gravity_adlist_ids);
-		gravity_adlist_ids = NULL;
-	}
-	if(antigravity_adlist_ids != NULL)
-	{
-		free(antigravity_adlist_ids);
-		antigravity_adlist_ids = NULL;
-	}
-	adlist_ids_capacity = 0;
+	// Adlist ID arrays are stored in SHM intarrays — no per-process cleanup needed.
+	// The SHM region is managed by the SHM subsystem.
 
 	// Close table
 	log_debug(DEBUG_ANY, "Closing gravity database");
@@ -1670,8 +1579,9 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 	const char *listname = antigravity ? "antigravity" : "gravity";
 
 	// Ensure adlist IDs are pre-computed for this client
-	if(client->id >= adlist_ids_capacity ||
-	   (gravity_adlist_ids[client->id].ids == NULL && antigravity_adlist_ids[client->id].ids == NULL))
+	const size_t adlistpos = antigravity ? client->antigravity_adlistpos
+	                                     : client->gravity_adlistpos;
+	if(!client->flags.found_group || adlistpos == 0)
 	{
 		if(!gravityDB_prepare_client_statements(client))
 		{
@@ -1680,24 +1590,18 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 		}
 	}
 
-	// Get the shared statement and bind this client's adlist_id array
+	// Get the shared statement and bind this client's adlist_id array from SHM
 	sqlite3_stmt *stmt = antigravity ? antigravity_shared_stmt : gravity_shared_stmt;
-	const adlist_id_set *idset = antigravity
-		? &antigravity_adlist_ids[client->id]
-		: &gravity_adlist_ids[client->id];
+	const size_t pos = antigravity ? client->antigravity_adlistpos
+	                               : client->gravity_adlistpos;
+	int adlist_count = 0;
+	const int32_t *adlist_ids = getintarray(pos, &adlist_count);
 
-	// Bind the carray parameter (parameter 2) with this client's adlist IDs.
-	// SQLITE_STATIC: the array is managed by us, not by SQLite.
-	if(idset->count > 0)
-	{
-		sqlite3_carray_bind(stmt, 2, idset->ids, idset->count,
-		                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
-	}
-	else
-	{
-		// No eligible adlist IDs — domain can't match, return early
+	if(adlist_ids == NULL || adlist_count == 0)
 		return NOT_FOUND;
-	}
+
+	sqlite3_carray_bind(stmt, 2, (void*)adlist_ids, adlist_count,
+	                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
 
 	// Check if domain is exactly in gravity list
 	enum db_result exact_match;
@@ -1845,7 +1749,7 @@ bool gravityDB_get_regex_client_groups(clientsData *client, const unsigned int n
 
 	// Perform query
 	log_debug(DEBUG_REGEX, "Regex %s: Querying associated regexes for client %s (groups: %s)",
-	          regextype[type], getstr(client->ippos), fmt_group_ids(client));
+	          regextype[type], getstr(client->ippos), fmt_intarray(client->groupspos, (char[256]){0}, 256));
 	int rc;
 	while((rc = sqlite3_step(query_stmt)) == SQLITE_ROW)
 	{
