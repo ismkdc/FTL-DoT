@@ -305,6 +305,29 @@ bool init_memory_database(void)
 		}
 	}
 
+	// Enable memory-mapped I/O for the on-disk database to eliminate
+	// pread() syscall overhead during startup imports and periodic
+	// exports. Without mmap, SQLite reads pages via pread() which the
+	// kernel caches AND SQLite caches separately (two copies). With
+	// mmap, SQLite reads directly from the kernel page cache via a
+	// virtual address mapping — one copy, shared. 256 MiB is a
+	// ceiling: for databases larger than this, pages beyond 256 MiB
+	// fall back to regular pread() I/O transparently. Silently falls
+	// back entirely on systems where mmap is unavailable.
+	//
+	// No posix_fadvise() pre-warming here (unlike gravity.db) because
+	// pihole-FTL.db can grow to multiple GB on busy networks. Pre-
+	// warming the entire file would evict useful cached pages (gravity
+	// B-tree, DNS cache) on memory-constrained systems. The mmap alone
+	// is sufficient: pages fault in on demand during import.
+	if(attached)
+	{
+		rc = sqlite3_exec(_memdb, "PRAGMA disk.mmap_size = 268435456", NULL, NULL, NULL);
+		if(rc != SQLITE_OK)
+			log_warn("init_memory_database(): Error enabling mmap for disk database: %s",
+			         sqlite3_errstr(rc));
+	}
+
 	// Prepare persistent insertion/replace statements
 	// Domain, client, forward, and addinfo IDs are cached
 	rc = sqlite3_prepare_v3(_memdb, "REPLACE INTO query_storage VALUES "\
