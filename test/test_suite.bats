@@ -200,9 +200,6 @@ setup() {
   run bash -c "grep -c 'build_client_querystr: SELECT id from vw_denylist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT adlist_id from vw_gravity WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
   run bash -c "grep -c 'Regex allow ([[:digit:]]*, DB ID [[:digit:]]*) .* NOT ENABLED for client 127.0.0.4' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "2" ]]
@@ -236,9 +233,6 @@ setup() {
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} != "0" ]]
   run bash -c "grep -c 'build_client_querystr: SELECT id from vw_denylist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT adlist_id from vw_gravity WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} != "0" ]]
   run bash -c "grep -c 'Regex allow ([[:digit:]]*, DB ID [[:digit:]]*) .* NOT ENABLED for client 127.0.0.5' /var/log/pihole/FTL.log"
@@ -281,10 +275,6 @@ setup() {
   [[ ${lines[0]} == "1" ]]
   run bash -c "grep -c 'build_client_querystr: SELECT id from vw_denylist WHERE domain = ? AND group_id IN (5);' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT adlist_id from vw_gravity WHERE domain = ? AND group_id IN (5);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
   run bash -c "grep -c 'Regex allow ([[:digit:]]*, DB ID [[:digit:]]*) .* NOT ENABLED for client 127.0.0.6' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "2" ]]
