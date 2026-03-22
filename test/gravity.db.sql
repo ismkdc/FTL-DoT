@@ -58,6 +58,9 @@ CREATE TABLE antigravity
 	adlist_id INTEGER NOT NULL REFERENCES adlist (id)
 );
 
+CREATE INDEX idx_gravity ON gravity (domain, adlist_id);
+CREATE INDEX idx_antigravity ON antigravity (domain, adlist_id);
+
 CREATE TABLE info
 (
 	property TEXT PRIMARY KEY,
