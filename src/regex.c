@@ -151,7 +151,8 @@ bool compile_regex(const char *regexin, regexData *regex, char **message)
 		// Extract regular expression pattern in front of FTL-specific syntax
 		char *saveptr = NULL;
 		char *part = strtok_r(buf, FTL_REGEX_SEP, &saveptr);
-		strncpy(rgxbuf, part, strlen(part));
+		if(part != NULL)
+			strncpy(rgxbuf, part, strlen(part));
 
 		// Analyze FTL-specific parts
 		while((part = strtok_r(NULL, FTL_REGEX_SEP, &saveptr)) != NULL)
