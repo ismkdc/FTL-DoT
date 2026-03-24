@@ -46,7 +46,6 @@ static sqlite3_stmt *gravity_shared_stmt = NULL;
 static sqlite3_stmt *antigravity_shared_stmt = NULL;
 static sqlite3_stmt *allowlist_shared_stmt = NULL;
 static sqlite3_stmt *denylist_shared_stmt = NULL;
-static sqlite3_stmt *adlist_ids_stmt = NULL;
 static sqlite3_stmt *regex_deny_groups_stmt = NULL;
 static sqlite3_stmt *regex_allow_groups_stmt = NULL;
 
@@ -107,7 +106,6 @@ static sqlite3_stmt *parent_gravity_shared_stmt = NULL;
 static sqlite3_stmt *parent_antigravity_shared_stmt = NULL;
 static sqlite3_stmt *parent_allowlist_shared_stmt = NULL;
 static sqlite3_stmt *parent_denylist_shared_stmt = NULL;
-static sqlite3_stmt *parent_adlist_ids_stmt = NULL;
 static sqlite3_stmt *parent_regex_deny_groups_stmt = NULL;
 static sqlite3_stmt *parent_regex_allow_groups_stmt = NULL;
 
@@ -162,15 +160,10 @@ void gravityDB_forked(void)
 	allowlist_shared_stmt = NULL;
 	parent_denylist_shared_stmt = denylist_shared_stmt;
 	denylist_shared_stmt = NULL;
-	parent_adlist_ids_stmt = adlist_ids_stmt;
-	adlist_ids_stmt = NULL;
 	parent_regex_deny_groups_stmt = regex_deny_groups_stmt;
 	regex_deny_groups_stmt = NULL;
 	parent_regex_allow_groups_stmt = regex_allow_groups_stmt;
 	regex_allow_groups_stmt = NULL;
-
-	// Adlist ID arrays are stored in SHM — accessible from forks without
-	// recomputation.
 
 	// Open the database
 	gravityDB_open();
@@ -331,15 +324,30 @@ static bool gravityDB_open(void)
 		}
 	}
 
-	// Prepare shared statements using carray() for group/adlist filtering.
+	// Prepare shared statements using carray() for group filtering.
 	// One statement per process, reused across all clients by rebinding
 	// the carray parameter before each call.
+	//
+	// IMPORTANT: All queries go through views (vw_gravity, vw_antigravity,
+	// vw_allowlist, vw_denylist) rather than hitting base tables directly.
+	// The views' JOINs live-check adlist.enabled, group.enabled, and
+	// group assignments on every query. This is critical for correctness:
+	// users can modify groups, adlists, and their assignments at runtime
+	// (via the API or directly in gravity.db), and those changes must take
+	// effect immediately without requiring a full gravity reload.
+	//
+	// Pre-computing adlist IDs per client and querying the base gravity
+	// table directly was tried (bypassing view JOINs for a ~4x speedup)
+	// but rejected: cached IDs become stale when users disable a group,
+	// toggle an adlist, or change group assignments without triggering
+	// RELOAD_GRAVITY — the info.updated timestamp only changes on
+	// "pihole -g", not on individual table modifications.
 	struct { sqlite3_stmt **stmt; const char *sql; const char *name; } shared_stmts[] = {
 		{ &gravity_shared_stmt,
-		  "SELECT adlist_id FROM gravity WHERE domain = ?1 AND adlist_id IN carray(?2);",
+		  "SELECT adlist_id FROM vw_gravity WHERE domain = ?1 AND group_id IN carray(?2);",
 		  "gravity" },
 		{ &antigravity_shared_stmt,
-		  "SELECT adlist_id FROM antigravity WHERE domain = ?1 AND adlist_id IN carray(?2);",
+		  "SELECT adlist_id FROM vw_antigravity WHERE domain = ?1 AND group_id IN carray(?2);",
 		  "antigravity" },
 		{ &allowlist_shared_stmt,
 		  "SELECT id FROM vw_allowlist WHERE domain = ?1 AND group_id IN carray(?2);",
@@ -347,14 +355,6 @@ static bool gravityDB_open(void)
 		{ &denylist_shared_stmt,
 		  "SELECT id FROM vw_denylist WHERE domain = ?1 AND group_id IN carray(?2);",
 		  "denylist" },
-		{ &adlist_ids_stmt,
-		  "SELECT DISTINCT adlist_by_group.adlist_id "
-		  "FROM adlist_by_group "
-		  "JOIN adlist ON adlist.id = adlist_by_group.adlist_id "
-		  "JOIN \"group\" ON \"group\".id = adlist_by_group.group_id "
-		  "WHERE adlist.enabled = 1 AND \"group\".enabled = 1 "
-		  "AND adlist.type = ?1 AND adlist_by_group.group_id IN carray(?2);",
-		  "adlist_ids" },
 		// DISTINCT eliminates duplicate IDs when a regex domain appears in multiple
 		// groups that are all present in the client's carray.
 		{ &regex_deny_groups_stmt,
@@ -407,50 +407,6 @@ bool gravityDB_reopen(void)
 
 	// Re-open gravity database
 	return gravityDB_open();
-}
-
-// Pre-compute the set of eligible adlist IDs for a client's groups
-// and store in SHM via addintarray(). Returns the SHM position (0 = empty,
-// SIZE_MAX = error).
-// adlist_type: 0 = gravity (blocking), 1 = antigravity (allowing)
-static size_t get_client_adlist_ids(const int adlist_type,
-                                    const int32_t *group_ids, int group_count)
-{
-	if(adlist_ids_stmt == NULL)
-		return SIZE_MAX;
-
-	// Bind parameters: ?1 = adlist type, ?2 = group_id array
-	sqlite3_bind_int(adlist_ids_stmt, 1, adlist_type);
-	if(group_count > 0 && group_ids != NULL)
-		sqlite3_carray_bind(adlist_ids_stmt, 2, (void*)group_ids, group_count,
-		                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
-
-	int cap = 4;
-	int32_t *ids = calloc((size_t)cap, sizeof(int32_t));
-	if(ids == NULL)
-	{
-		sqlite3_reset(adlist_ids_stmt);
-		return SIZE_MAX;
-	}
-
-	int rc, count = 0;
-	while((rc = sqlite3_step(adlist_ids_stmt)) == SQLITE_ROW)
-	{
-		if(count >= cap)
-		{
-			cap *= 2;
-			int32_t *tmp = realloc(ids, (size_t)cap * sizeof(int32_t));
-			if(tmp == NULL) { free(ids); sqlite3_reset(adlist_ids_stmt); return SIZE_MAX; }
-			ids = tmp;
-		}
-		ids[count++] = sqlite3_column_int(adlist_ids_stmt, 0);
-	}
-	sqlite3_reset(adlist_ids_stmt);
-
-	// Store in SHM (deduplicated)
-	const size_t pos = addintarray(ids, count);
-	free(ids);
-	return pos;
 }
 
 // Determine whether to show IP or hardware address
@@ -1006,34 +962,6 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 	if(!client->flags.found_group && !get_client_groupids(client))
 		return false;
 
-	// Get the client's group IDs from SHM for carray binding
-	int group_count = 0;
-	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
-
-	// Pre-compute eligible adlist IDs for this client's gravity/antigravity
-	// lookups and store in SHM (deduplicated via addintarray).
-	log_debug(DEBUG_DATABASE, "Pre-computing adlist IDs for client %s (groups: %s)",
-	          clientip, fmt_intarray(client->groupspos, (char[256]){0}, 256));
-
-	client->gravity_adlistpos = get_client_adlist_ids(0, group_ids, group_count);
-	if(client->gravity_adlistpos == SIZE_MAX)
-	{
-		client->gravity_adlistpos = 0;
-		return false;
-	}
-
-	client->antigravity_adlistpos = get_client_adlist_ids(1, group_ids, group_count);
-	if(client->antigravity_adlistpos == SIZE_MAX)
-	{
-		client->antigravity_adlistpos = 0;
-		return false;
-	}
-
-	log_debug(DEBUG_DATABASE, "  gravity adlist IDs: %s",
-	          fmt_intarray(client->gravity_adlistpos, (char[256]){0}, 256));
-	log_debug(DEBUG_DATABASE, "  antigravity adlist IDs: %s",
-	          fmt_intarray(client->antigravity_adlistpos, (char[256]){0}, 256));
-
 	return true;
 }
 
@@ -1041,10 +969,6 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 static inline void gravityDB_finalize_client_statements(clientsData *client)
 {
 	log_debug(DEBUG_DATABASE, "Finalizing gravity data for %s", getstr(client->ippos));
-
-	// Reset adlist ID positions (stored in SHM, freed on gravity close)
-	client->gravity_adlistpos = 0;
-	client->antigravity_adlistpos = 0;
 
 	// Unset group found property to trigger a check next time the
 	// client sends a query
@@ -1070,7 +994,6 @@ void gravityDB_close(void)
 	sqlite3_stmt **shared[] = {
 		&gravity_shared_stmt, &antigravity_shared_stmt,
 		&allowlist_shared_stmt, &denylist_shared_stmt,
-		&adlist_ids_stmt,
 		&regex_deny_groups_stmt, &regex_allow_groups_stmt,
 	};
 	for(unsigned int i = 0; i < sizeof(shared)/sizeof(shared[0]); i++)
@@ -1081,9 +1004,6 @@ void gravityDB_close(void)
 			*shared[i] = NULL;
 		}
 	}
-
-	// Adlist ID arrays are stored in SHM intarrays — no per-process cleanup needed.
-	// The SHM region is managed by the SHM subsystem.
 
 	// Close table
 	log_debug(DEBUG_ANY, "Closing gravity database");
@@ -1586,29 +1506,22 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 	// Get list name for debug logging and domain_in_list()
 	const char *listname = antigravity ? "antigravity" : "gravity";
 
-	// Ensure adlist IDs are pre-computed for this client
-	const size_t adlistpos = antigravity ? client->antigravity_adlistpos
-	                                     : client->gravity_adlistpos;
-	if(!client->flags.found_group || adlistpos == 0)
+	// Ensure client's groups are resolved
+	if(!client->flags.found_group && !gravityDB_prepare_client_statements(client))
 	{
-		if(!gravityDB_prepare_client_statements(client))
-		{
-			log_err("Gravity database not available (%s)", listname);
-			return LIST_NOT_AVAILABLE;
-		}
+		log_err("Gravity database not available (%s)", listname);
+		return LIST_NOT_AVAILABLE;
 	}
 
-	// Get the shared statement and bind this client's adlist_id array from SHM
-	sqlite3_stmt *stmt = antigravity ? antigravity_shared_stmt : gravity_shared_stmt;
-	const size_t pos = antigravity ? client->antigravity_adlistpos
-	                               : client->gravity_adlistpos;
-	int adlist_count = 0;
-	const int32_t *adlist_ids = getintarray(pos, &adlist_count);
-
-	if(adlist_ids == NULL || adlist_count == 0)
+	// Bind client's group_id array via carray — the view's JOINs
+	// live-check adlist.enabled and group.enabled on every query
+	int group_count = 0;
+	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
+	if(group_ids == NULL || group_count == 0)
 		return NOT_FOUND;
 
-	sqlite3_carray_bind(stmt, 2, (void*)adlist_ids, adlist_count,
+	sqlite3_stmt *stmt = antigravity ? antigravity_shared_stmt : gravity_shared_stmt;
+	sqlite3_carray_bind(stmt, 2, (void*)group_ids, group_count,
 	                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
 
 	// Check if domain is exactly in gravity list
