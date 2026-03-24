@@ -229,21 +229,21 @@ int api_stats_database_top_items(struct ftl_conn *api)
 	{
 		if(blocked)
 		{
-			// Get domains and count of queries (blocked)
-			querystr = "SELECT COUNT(*),d.domain AS cnt FROM query_storage q "
+			// Get top domains by count of queries (blocked)
+			querystr = "SELECT COUNT(*) AS cnt,d.domain FROM query_storage q "
 			           "JOIN domain_by_id d ON d.id = q.domain "
 			           "WHERE timestamp >= :from AND timestamp <= :until "
 			           "AND " FILTER_STATUS_BLOCKED " "
-			           "GROUP by q.domain";
+			           "GROUP BY q.domain ORDER BY cnt DESC LIMIT :count";
 		}
 		else
 		{
-			// Get domains and count of queries (not blocked)
-			querystr = "SELECT COUNT(*),d.domain AS cnt FROM query_storage q "
+			// Get top domains by count of queries (not blocked)
+			querystr = "SELECT COUNT(*) AS cnt,d.domain FROM query_storage q "
 			           "JOIN domain_by_id d ON d.id = q.domain "
 			           "WHERE timestamp >= :from AND timestamp <= :until "
 			           "AND " FILTER_STATUS_NOT_BLOCKED " "
-			           "GROUP by q.domain";
+			           "GROUP BY q.domain ORDER BY cnt DESC LIMIT :count";
 		}
 
 		// Count total number of queries for domains
@@ -259,21 +259,21 @@ int api_stats_database_top_items(struct ftl_conn *api)
 	{
 		if(blocked)
 		{
-			// Get clients and count of queries (blocked)
-			querystr = "SELECT COUNT(*),c.ip,c.name AS cnt FROM query_storage q "
+			// Get top clients by count of queries (blocked)
+			querystr = "SELECT COUNT(*) AS cnt,c.ip,c.name FROM query_storage q "
 			           "JOIN client_by_id c ON c.id = q.client "
 			           "WHERE timestamp >= :from AND timestamp <= :until "
 			           "AND " FILTER_STATUS_BLOCKED " "
-			           "GROUP by q.client";
+			           "GROUP BY q.client ORDER BY cnt DESC LIMIT :count";
 		}
 		else
 		{
-			// Get clients and count of queries (not blocked)
-			querystr = "SELECT COUNT(*),c.ip,c.name AS cnt FROM query_storage q "
+			// Get top clients by count of queries (not blocked)
+			querystr = "SELECT COUNT(*) AS cnt,c.ip,c.name FROM query_storage q "
 			           "JOIN client_by_id c ON c.id = q.client "
 			           "WHERE timestamp >= :from AND timestamp <= :until "
 			           "AND " FILTER_STATUS_NOT_BLOCKED " "
-			           "GROUP by q.client";
+			           "GROUP BY q.client ORDER BY cnt DESC LIMIT :count";
 		}
 
 		// Count total number of queries for clients
@@ -330,11 +330,23 @@ int api_stats_database_top_items(struct ftl_conn *api)
 		                       NULL);
 	}
 
-	// Loop over and accumulate results
+	// Bind count limit to prepared statement
+	if((rc = sqlite3_bind_int(stmt, 3, (int)count)) != SQLITE_OK)
+	{
+		log_err("api_stats_database_history(): Failed to bind count (error %d) - %s",
+		        rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		dbclose(&db);
+
+		return send_json_error(api, 500,
+		                       "internal_error",
+		                       "Failed to bind count",
+		                       NULL);
+	}
+
+	// Loop over results (limited by SQL LIMIT :count)
 	cJSON *top_items = JSON_NEW_ARRAY();
-	unsigned int total = 0;
-	while((rc = sqlite3_step(stmt)) == SQLITE_ROW &&
-	       ++total < count)
+	while((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 	{
 		// Get count
 		const int cnt = sqlite3_column_int(stmt, 0);
