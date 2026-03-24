@@ -591,23 +591,57 @@ static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 }
 
 // Register ordinary signals handler
+// Alternate signal stack so the crash handler can run even when the
+// regular stack has overflowed. SIGSTKSZ is not a compile-time constant
+// on glibc >= 2.34, so use a fixed 16 KiB buffer (the minimum required
+// by POSIX is MINSIGSTKSZ which is typically 2-8 KiB; 16 KiB gives
+// ample room for the backtrace/logging calls in our crash handler).
+#define FTL_ALT_STACK_SIZE 16384
+static uint8_t alt_stack_mem[FTL_ALT_STACK_SIZE];
+
 void handle_signals(void)
 {
+	// Install an alternate signal stack for crash handlers. Without
+	// this, a stack overflow fault cannot be diagnosed because the
+	// handler itself would overflow the same stack.
+	stack_t ss = {
+		.ss_sp = alt_stack_mem,
+		.ss_size = FTL_ALT_STACK_SIZE,
+		.ss_flags = 0
+	};
+	sigaltstack(&ss, NULL);
+
 	struct sigaction old_action;
 
-	const int signals[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTERM };
-	for(unsigned int i = 0; i < ArraySize(signals); i++)
+	const int crash_signals[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE };
+	for(unsigned int i = 0; i < ArraySize(crash_signals); i++)
 	{
-		// Catch this signal
-		sigaction (signals[i], NULL, &old_action);
+		sigaction(crash_signals[i], NULL, &old_action);
 		if(old_action.sa_handler != SIG_IGN)
 		{
 			struct sigaction SIGaction = { 0 };
-			SIGaction.sa_flags = SA_SIGINFO;
+			// SA_SIGINFO:   deliver siginfo_t with fault details
+			// SA_ONSTACK:   run on the alternate signal stack
+			// SA_RESETHAND: reset to SIG_DFL after first invocation,
+			//               preventing infinite re-entry if the
+			//               handler itself faults (e.g. heap corruption
+			//               causes log_info to SIGSEGV again)
+			SIGaction.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
 			sigemptyset(&SIGaction.sa_mask);
-			SIGaction.sa_sigaction = signals[i] != SIGTERM ? &signal_handler : &SIGTERM_handler;
-			sigaction(signals[i], &SIGaction, NULL);
+			SIGaction.sa_sigaction = &signal_handler;
+			sigaction(crash_signals[i], &SIGaction, NULL);
 		}
+	}
+
+	// SIGTERM: graceful shutdown — no SA_ONSTACK or SA_RESETHAND needed
+	sigaction(SIGTERM, NULL, &old_action);
+	if(old_action.sa_handler != SIG_IGN)
+	{
+		struct sigaction SIGaction = { 0 };
+		SIGaction.sa_flags = SA_SIGINFO;
+		sigemptyset(&SIGaction.sa_mask);
+		SIGaction.sa_sigaction = &SIGTERM_handler;
+		sigaction(SIGTERM, &SIGaction, NULL);
 	}
 
 	// Log start time of FTL

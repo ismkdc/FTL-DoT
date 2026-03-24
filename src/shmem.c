@@ -270,7 +270,8 @@ static void str_hash_sync(void)
 // Free the process-local string hash table (called from destroy_shmem)
 static void str_hash_reset(void)
 {
-	free(str_hash_table);
+	if(str_hash_table != NULL)
+		free(str_hash_table);
 	str_hash_table = NULL;
 	str_hash_cap = 0;
 	str_hash_used = 0;
@@ -1193,6 +1194,10 @@ static bool realloc_shm(SharedMemory *sharedMemory, const size_t size1, const si
 
 static void delete_shm(SharedMemory *sharedMemory)
 {
+	// Skip if this SHM region was never created (e.g. crash before init)
+	if(sharedMemory->name == NULL)
+		return;
+
 	// Unmap shared memory (if mmapped)
 	if(sharedMemory->ptr != NULL)
 	{
@@ -1216,7 +1221,7 @@ static void delete_shm(SharedMemory *sharedMemory)
 	sharedMemory->ptr = NULL;
 
 	// Close shared memory file descriptor
-	if(close(sharedMemory->fd) != 0)
+	if(sharedMemory->fd > -1 && close(sharedMemory->fd) != 0)
 		log_warn("delete_shm(): close(%i) failed: %s", sharedMemory->fd, strerror(errno));
 	sharedMemory->fd = -1;
 
