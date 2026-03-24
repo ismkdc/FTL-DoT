@@ -44,7 +44,7 @@ CREATE TABLE adlist_by_group
 	adlist_id INTEGER NOT NULL REFERENCES adlist (id),
 	group_id INTEGER NOT NULL REFERENCES "group" (id),
 	PRIMARY KEY (adlist_id, group_id)
-);
+) WITHOUT ROWID;
 
 CREATE TABLE gravity
 (
@@ -61,13 +61,12 @@ CREATE TABLE antigravity
 CREATE INDEX idx_gravity ON gravity (domain, adlist_id);
 CREATE INDEX idx_antigravity ON antigravity (domain, adlist_id);
 CREATE INDEX idx_adlist_by_group_gid ON adlist_by_group (group_id, adlist_id);
-CREATE INDEX idx_domainlist_by_group_gid ON domainlist_by_group (group_id, domainlist_id);
 
 CREATE TABLE info
 (
 	property TEXT PRIMARY KEY,
 	value TEXT NOT NULL
-);
+) WITHOUT ROWID;
 
 INSERT INTO "info" VALUES('version','20');
 
@@ -76,7 +75,9 @@ CREATE TABLE domainlist_by_group
 	domainlist_id INTEGER NOT NULL REFERENCES domainlist (id),
 	group_id INTEGER NOT NULL REFERENCES "group" (id),
 	PRIMARY KEY (domainlist_id, group_id)
-);
+) WITHOUT ROWID;
+
+CREATE INDEX idx_domainlist_by_group_gid ON domainlist_by_group (group_id, domainlist_id);
 
 CREATE TABLE client
 (
@@ -92,7 +93,7 @@ CREATE TABLE client_by_group
 	client_id INTEGER NOT NULL REFERENCES client (id),
 	group_id INTEGER NOT NULL REFERENCES "group" (id),
 	PRIMARY KEY (client_id, group_id)
-);
+) WITHOUT ROWID;
 
 CREATE TRIGGER tr_adlist_update AFTER UPDATE ON adlist
     BEGIN
@@ -130,7 +131,7 @@ CREATE VIEW vw_denylist AS SELECT domain, domainlist.id AS id, domainlist_by_gro
     LEFT JOIN domainlist_by_group ON domainlist_by_group.domainlist_id = domainlist.id
     LEFT JOIN "group" ON "group".id = domainlist_by_group.group_id
     WHERE domainlist.enabled = 1 AND (domainlist_by_group.group_id IS NULL OR "group".enabled = 1)
-add     AND domainlist.type = 1;
+    AND domainlist.type = 1;
 
 CREATE VIEW vw_regex_allowlist AS SELECT domain, domainlist.id AS id, domainlist_by_group.group_id AS group_id
     FROM domainlist

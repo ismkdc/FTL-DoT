@@ -41,13 +41,24 @@
 // be TCP workers) to use the database simultaneously without corrupting the
 // gravity database
 // Shared prepared statements — one per process, reused across all clients
-// by rebinding the group_id or adlist_id array via carray() before each call.
+// by rebinding the group_id array via carray() before each call.
 static sqlite3_stmt *gravity_shared_stmt = NULL;
 static sqlite3_stmt *antigravity_shared_stmt = NULL;
 static sqlite3_stmt *allowlist_shared_stmt = NULL;
 static sqlite3_stmt *denylist_shared_stmt = NULL;
 static sqlite3_stmt *regex_deny_groups_stmt = NULL;
 static sqlite3_stmt *regex_allow_groups_stmt = NULL;
+
+// Per-statement cache of the last-bound carray groupspos. Since addintarray()
+// deduplicates, clients sharing the same group set share the same groupspos.
+// Most installations have all clients in the default group, so after the first
+// DNS query every subsequent query skips the carray rebind (which would
+// otherwise allocate/free an internal carray_bind struct each time).
+// Reset to 0 in gravityDB_close() when statements are finalized.
+static size_t last_bound_gravity = 0;
+static size_t last_bound_antigravity = 0;
+static size_t last_bound_allowlist = 0;
+static size_t last_bound_denylist = 0;
 
 // Private variables
 static sqlite3 *gravity_db = NULL;
@@ -57,6 +68,28 @@ static bool gravity_abp_format = false;
 static bool gravity_has_antigravity = false;
 static bool gravity_has_exact_allowlist = false;
 static bool gravity_has_exact_denylist = false;
+
+// Bind a client's group_id carray to a statement, skipping the bind when
+// the same array is already bound (common case: consecutive queries from
+// the same client). Returns the group_ids pointer, or NULL on error.
+static inline const int32_t *bind_client_groups(sqlite3_stmt *stmt,
+                                                size_t groupspos,
+                                                size_t *last_bound)
+{
+	int group_count = 0;
+	const int32_t *group_ids = getintarray(groupspos, &group_count);
+	if(group_ids == NULL || group_count == 0)
+		return NULL;
+
+	if(groupspos != *last_bound)
+	{
+		sqlite3_carray_bind(stmt, 2, (void*)group_ids, group_count,
+		                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
+		*last_bound = groupspos;
+	}
+
+	return group_ids;
+}
 
 // Gravity lookup performance statistics.
 // All lookups happen under the SHM lock, so no atomic operations are needed.
@@ -164,6 +197,12 @@ void gravityDB_forked(void)
 	regex_deny_groups_stmt = NULL;
 	parent_regex_allow_groups_stmt = regex_allow_groups_stmt;
 	regex_allow_groups_stmt = NULL;
+
+	// Reset carray bind cache for the new process
+	last_bound_gravity = 0;
+	last_bound_antigravity = 0;
+	last_bound_allowlist = 0;
+	last_bound_denylist = 0;
 
 	// Open the database
 	gravityDB_open();
@@ -990,6 +1029,12 @@ void gravityDB_close(void)
 			gravityDB_finalize_client_statements(client);
 	}
 
+	// Reset carray bind cache (statements are about to be finalized)
+	last_bound_gravity = 0;
+	last_bound_antigravity = 0;
+	last_bound_allowlist = 0;
+	last_bound_denylist = 0;
+
 	// Finalize all shared statements
 	sqlite3_stmt **shared[] = {
 		&gravity_shared_stmt, &antigravity_shared_stmt,
@@ -1314,19 +1359,10 @@ enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clients
 		return LIST_NOT_AVAILABLE;
 	}
 
-	// Bind client's group_id array via carray
-	int group_count = 0;
-	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
-	if(group_ids == NULL || group_count == 0)
-		return NOT_FOUND;
-
+	// Bind client's group_id array via carray (skips rebind for same client)
 	sqlite3_stmt *stmt = allowlist_shared_stmt;
-	sqlite3_carray_bind(stmt, 2, (void*)group_ids, group_count,
-	                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
-
-	// We have to check both the exact allowlist (using a prepared database statement)
-	// as well the compiled regex allowlist filters to check if the current domain is
-	// allowlisted.
+	if(bind_client_groups(stmt, client->groupspos, &last_bound_allowlist) == NULL)
+		return NOT_FOUND;
 	enum db_result result;
 	GRAVITY_TIMED_LOOKUP(result, domain_in_list(domain, stmt, "allowlist", &dns_cache->list_id),
 	                     GRAVITY_STATS_ALLOWLIST);
@@ -1513,16 +1549,12 @@ enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsD
 		return LIST_NOT_AVAILABLE;
 	}
 
-	// Bind client's group_id array via carray — the view's JOINs
-	// live-check adlist.enabled and group.enabled on every query
-	int group_count = 0;
-	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
-	if(group_ids == NULL || group_count == 0)
-		return NOT_FOUND;
-
+	// Bind client's group_id array via carray (skips rebind for same client).
+	// The view's JOINs live-check adlist.enabled and group.enabled on every query.
 	sqlite3_stmt *stmt = antigravity ? antigravity_shared_stmt : gravity_shared_stmt;
-	sqlite3_carray_bind(stmt, 2, (void*)group_ids, group_count,
-	                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
+	size_t *last = antigravity ? &last_bound_antigravity : &last_bound_gravity;
+	if(bind_client_groups(stmt, client->groupspos, last) == NULL)
+		return NOT_FOUND;
 
 	// Check if domain is exactly in gravity list
 	enum db_result exact_match;
@@ -1599,15 +1631,10 @@ enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsD
 		return LIST_NOT_AVAILABLE;
 	}
 
-	// Bind client's group_id array via carray
-	int group_count = 0;
-	const int32_t *group_ids = getintarray(client->groupspos, &group_count);
-	if(group_ids == NULL || group_count == 0)
-		return NOT_FOUND;
-
+	// Bind client's group_id array via carray (skips rebind for same client)
 	sqlite3_stmt *stmt = denylist_shared_stmt;
-	sqlite3_carray_bind(stmt, 2, (void*)group_ids, group_count,
-	                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
+	if(bind_client_groups(stmt, client->groupspos, &last_bound_denylist) == NULL)
+		return NOT_FOUND;
 
 	enum db_result result;
 	GRAVITY_TIMED_LOOKUP(result, domain_in_list(domain, stmt, "denylist", &dns_cache->list_id),
