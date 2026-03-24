@@ -38,6 +38,12 @@ static volatile pid_t mpid = 0;
 static time_t FTLstarttime = 0;
 volatile int exit_code = EXIT_SUCCESS;
 
+// Saved by the SIGTERM handler for deferred logging in the main loop.
+// Only pid_t and uid_t (both integer types) are safe to write from a
+// signal handler via volatile.
+static volatile pid_t term_sender_pid = 0;
+static volatile uid_t term_sender_uid = 0;
+
 // Binary path stored by init_backtrace() — signal-handler-safe static buffer,
 // never reallocated, safe to read from any context including signal handlers
 #if defined(USE_UNWIND)
@@ -448,8 +454,11 @@ static void SIGRT_handler(int signum, siginfo_t *si, void *context)
 		return;
 	}
 
-	int rtsig = signum - SIGRTMIN;
-	log_info("Received: %s (%d -> %d)", strsignal(signum), signum, rtsig);
+	// Do NOT call log_info() or strsignal() here — they are not
+	// async-signal-safe and can deadlock if the signal arrives while
+	// malloc's internal lock is held. The events set below are logged
+	// when processed in the main loop / database thread.
+	const int rtsig = signum - SIGRTMIN;
 
 	if(rtsig == 0)
 	{
@@ -501,17 +510,36 @@ static void SIGRT_handler(int signum, siginfo_t *si, void *context)
 static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 {
 	(void)context;
+	(void)signum;
 	// Ignore SIGTERM outside of the main process (TCP forks)
 	if(mpid != getpid())
-	{
-		log_debug(DEBUG_ANY, "Ignoring SIGTERM in TCP worker");
 		return;
-	}
-	log_debug(DEBUG_ANY, "Received SIGTERM");
 
-	// Get PID and UID of the process that sent the terminating signal
-	const pid_t kill_pid = si->si_pid;
-	const uid_t kill_uid = si->si_uid;
+	// Save sender info for deferred logging (async-signal-safe: just
+	// writing volatile integer types). The expensive lookup of the
+	// sender's process name and username is done in log_sigterm_info()
+	// called from the main loop after the signal handler returns.
+	term_sender_pid = si->si_pid;
+	term_sender_uid = si->si_uid;
+
+	// Terminate dnsmasq to stop DNS service.
+	// raise() is async-signal-safe per POSIX.
+	if(!dnsmasq_failed)
+		raise(SIGUSR6);
+	else
+		killed = true;
+}
+
+// Log details about who sent the SIGTERM. Called from the main shutdown
+// path (outside signal context) so it is safe to use stdio, getpwuid,
+// and logging functions.
+void log_sigterm_info(void)
+{
+	const pid_t kill_pid = term_sender_pid;
+	const uid_t kill_uid = term_sender_uid;
+
+	if(kill_pid == 0)
+		return; // SIGTERM handler never ran
 
 	// Get name of the process that sent the terminating signal
 	char kill_name[256] = { 0 };
@@ -520,18 +548,11 @@ static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 	FILE *fp = fopen(kill_exe, "r");
 	if(fp != NULL)
 	{
-		// Successfully opened file
 		size_t read = 0;
-		// Read line from file
 		if((read = fread(kill_name, sizeof(char), sizeof(kill_name), fp)) > 0)
 		{
-			// Successfully read line
-
-			// cmdline contains the command-line arguments as a set
-			// of strings separated by null bytes ('\0'), with a
-			// further null byte after the last string. Hence, we
-			// need to replace all null bytes with spaces for
-			// displaying it below
+			// cmdline contains null-separated arguments — replace
+			// null bytes with spaces for display
 			for(unsigned int i = 0; i < min((size_t)read, sizeof(kill_name)); i++)
 			{
 				if(kill_name[i] == '\0')
@@ -548,46 +569,22 @@ static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 			}
 		}
 		else
-		{
-			// Failed to read line
 			strcpy(kill_name, "N/A");
-		}
+		fclose(fp);
 	}
 	else
-	{
-		// Failed to open file
 		strcpy(kill_name, "N/A");
-	}
 
 	// Get username of the process that sent the terminating signal
 	char kill_user[256] = { 0 };
 	struct passwd *pwd = getpwuid(kill_uid);
 	if(pwd != NULL)
-	{
-		// Successfully obtained username
 		strncpy(kill_user, pwd->pw_name, sizeof(kill_user));
-	}
 	else
-	{
-		// Failed to obtain username
 		strcpy(kill_user, "N/A");
-	}
 
-	// Log who sent the signal
 	log_info("Asked to terminate by \"%s\" (PID %ld, user %s UID %ld)",
 	         kill_name, (long int)kill_pid, kill_user, (long int)kill_uid);
-
-	// Terminate dnsmasq to stop DNS service
-	if(!dnsmasq_failed)
-	{
-		log_debug(DEBUG_ANY, "Sending SIGUSR6 to dnsmasq to stop DNS service");
-		raise(SIGUSR6);
-	}
-	else
-	{
-		log_debug(DEBUG_ANY, "Embedded dnsmasq failed, exiting on request");
-		killed = true;
-	}
 }
 
 // Register ordinary signals handler
