@@ -97,17 +97,17 @@ CREATE TABLE client_by_group
 
 CREATE TRIGGER tr_adlist_update AFTER UPDATE ON adlist
     BEGIN
-      UPDATE adlist SET date_modified = (cast(strftime('%s', 'now') as int)) WHERE address = NEW.address;
+      UPDATE adlist SET date_modified = (cast(strftime('%s', 'now') as int)) WHERE id = NEW.id;
     END;
 
 CREATE TRIGGER tr_client_update AFTER UPDATE ON client
     BEGIN
-      UPDATE client SET date_modified = (cast(strftime('%s', 'now') as int)) WHERE ip = NEW.ip;
+      UPDATE client SET date_modified = (cast(strftime('%s', 'now') as int)) WHERE id = NEW.id;
     END;
 
 CREATE TRIGGER tr_domainlist_update AFTER UPDATE ON domainlist
     BEGIN
-      UPDATE domainlist SET date_modified = (cast(strftime('%s', 'now') as int)) WHERE domain = NEW.domain;
+      UPDATE domainlist SET date_modified = (cast(strftime('%s', 'now') as int)) WHERE id = NEW.id;
     END;
 
 -- Views use LEFT JOINs deliberately: groups can be removed from entries at
