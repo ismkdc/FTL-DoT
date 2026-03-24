@@ -136,7 +136,14 @@ static int field_get(const char *key, const char *value, size_t valuelen, void *
 			return MG_FORM_FIELD_HANDLE_ABORT;
 		}
 		// Allocate memory for the raw file data
-		data->data = realloc(data->data, data->filesize + valuelen);
+		void *tmp = realloc(data->data, data->filesize + valuelen);
+		if(tmp == NULL)
+		{
+			log_err("Failed to allocate memory for teleporter file data (%zu bytes)",
+			        data->filesize + valuelen);
+			return MG_FORM_FIELD_HANDLE_ABORT;
+		}
+		data->data = tmp;
 		// Copy the raw file data
 		memcpy(data->data + data->filesize, value, valuelen);
 		// Store the size of the file raw data
