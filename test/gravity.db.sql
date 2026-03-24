@@ -82,7 +82,7 @@ CREATE INDEX idx_domainlist_by_group_gid ON domainlist_by_group (group_id, domai
 CREATE TABLE client
 (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	ip TEXT NOL NULL UNIQUE,
+	ip TEXT NOT NULL UNIQUE,
 	date_added INTEGER NOT NULL DEFAULT (cast(strftime('%s', 'now') as int)),
 	date_modified INTEGER NOT NULL DEFAULT (cast(strftime('%s', 'now') as int)),
 	comment TEXT
