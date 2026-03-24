@@ -741,6 +741,7 @@ void FTL_reload_all_domainlists(void)
 
 	// Get size of gravity, number of domains, groups, clients, and lists
 	counters->database.gravity = gravityDB_count(GRAVITY_TABLE, false);
+	counters->database.antigravity = gravityDB_count(ANTIGRAVITY_TABLE, false);
 	counters->database.groups = gravityDB_count(GROUPS_TABLE, false);
 	counters->database.clients = gravityDB_count(CLIENTS_TABLE, false);
 	counters->database.lists = gravityDB_count(ADLISTS_TABLE, false);

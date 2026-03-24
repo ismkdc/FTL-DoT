@@ -115,7 +115,7 @@ static sqlite3_stmt *parent_regex_allow_groups_stmt = NULL;
 static bool gravityDB_open(void);
 
 // Table names corresponding to the enum defined in gravity-db.h
-static const char* tablename[] = { "vw_gravity", "vw_denylist", "vw_allowlist", "vw_regex_denylist", "vw_regex_allowlist" , "client", "group", "adlist", "denied_domains", "allowed_domains", "" };
+static const char* tablename[] = { "vw_gravity", "antigravity", "vw_denylist", "vw_allowlist", "vw_regex_denylist", "vw_regex_allowlist", "client", "group", "adlist", "denied_domains", "allowed_domains", "" };
 
 // Prototypes from functions in dnsmasq's source
 extern void rehash(int size);
@@ -355,11 +355,13 @@ static bool gravityDB_open(void)
 		  "WHERE adlist.enabled = 1 AND \"group\".enabled = 1 "
 		  "AND adlist.type = ?1 AND adlist_by_group.group_id IN carray(?2);",
 		  "adlist_ids" },
+		// DISTINCT eliminates duplicate IDs when a regex domain appears in multiple
+		// groups that are all present in the client's carray.
 		{ &regex_deny_groups_stmt,
-		  "SELECT id FROM vw_regex_denylist WHERE group_id IN carray(?1);",
+		  "SELECT DISTINCT id FROM vw_regex_denylist WHERE group_id IN carray(?1);",
 		  "regex_deny_groups" },
 		{ &regex_allow_groups_stmt,
-		  "SELECT id FROM vw_regex_allowlist WHERE group_id IN carray(?1);",
+		  "SELECT DISTINCT id FROM vw_regex_allowlist WHERE group_id IN carray(?1);",
 		  "regex_allow_groups" },
 	};
 	for(unsigned int i = 0; i < sizeof(shared_stmts)/sizeof(shared_stmts[0]); i++)
@@ -1113,6 +1115,8 @@ bool gravityDB_getTable(const unsigned char list)
 	// when domains are included in more than one group
 	if(list == GRAVITY_TABLE)
 		querystr = "SELECT DISTINCT domain FROM vw_gravity";
+	else if(list == ANTIGRAVITY_TABLE)
+		querystr = "SELECT DISTINCT domain FROM vw_antigravity";
 	else if(list == EXACT_DENY_TABLE)
 		querystr = "SELECT domain, id FROM vw_denylist GROUP BY id";
 	else if(list == EXACT_ALLOW_TABLE)
@@ -1200,9 +1204,13 @@ int gravityDB_count(const enum gravity_tables list, const bool total)
 	{
 		case GRAVITY_TABLE:
 			// We get the number of unique gravity domains as counted and stored by gravity. Counting the number
-			// of distinct domains in vw_gravity may take up to several minutes for very large blocking lists on
+			// of distinct domains in the gravity table may take up to several minutes for very large blocking lists on
 			// very low-end devices such as the Raspierry Pi Zero
 			querystr = "SELECT value FROM info WHERE property = 'gravity_count';";
+			break;
+		case ANTIGRAVITY_TABLE:
+			// We get the number of unique antigravity domains as counted and stored by gravity
+			querystr = "SELECT value FROM info WHERE property = 'antigravity_count';";
 			break;
 		case EXACT_DENY_TABLE:
 			querystr = total ? "SELECT COUNT(*) FROM domainlist WHERE type = 1"

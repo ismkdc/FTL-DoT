@@ -195,6 +195,7 @@ enum gravity_list_type {
 
 enum gravity_tables {
 	GRAVITY_TABLE,
+	ANTIGRAVITY_TABLE,
 	EXACT_DENY_TABLE,
 	EXACT_ALLOW_TABLE,
 	REGEX_DENY_TABLE,

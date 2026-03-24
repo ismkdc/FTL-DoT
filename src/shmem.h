@@ -72,6 +72,7 @@ typedef struct {
 	unsigned int regex_change;
 	struct {
 		int gravity;
+		int antigravity;
 		int clients;
 		int groups;
 		int lists;

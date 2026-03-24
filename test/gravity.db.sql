@@ -60,6 +60,8 @@ CREATE TABLE antigravity
 
 CREATE INDEX idx_gravity ON gravity (domain, adlist_id);
 CREATE INDEX idx_antigravity ON antigravity (domain, adlist_id);
+CREATE INDEX idx_adlist_by_group_gid ON adlist_by_group (group_id, adlist_id);
+CREATE INDEX idx_domainlist_by_group_gid ON domainlist_by_group (group_id, domainlist_id);
 
 CREATE TABLE info
 (
@@ -112,32 +114,28 @@ CREATE VIEW vw_allowlist AS SELECT domain, domainlist.id AS id, domainlist_by_gr
     LEFT JOIN domainlist_by_group ON domainlist_by_group.domainlist_id = domainlist.id
     LEFT JOIN "group" ON "group".id = domainlist_by_group.group_id
     WHERE domainlist.enabled = 1 AND (domainlist_by_group.group_id IS NULL OR "group".enabled = 1)
-    AND domainlist.type = 0
-    ORDER BY domainlist.id;
+    AND domainlist.type = 0;
 
 CREATE VIEW vw_denylist AS SELECT domain, domainlist.id AS id, domainlist_by_group.group_id AS group_id
     FROM domainlist
     LEFT JOIN domainlist_by_group ON domainlist_by_group.domainlist_id = domainlist.id
     LEFT JOIN "group" ON "group".id = domainlist_by_group.group_id
     WHERE domainlist.enabled = 1 AND (domainlist_by_group.group_id IS NULL OR "group".enabled = 1)
-    AND domainlist.type = 1
-    ORDER BY domainlist.id;
+add     AND domainlist.type = 1;
 
 CREATE VIEW vw_regex_allowlist AS SELECT domain, domainlist.id AS id, domainlist_by_group.group_id AS group_id
     FROM domainlist
     LEFT JOIN domainlist_by_group ON domainlist_by_group.domainlist_id = domainlist.id
     LEFT JOIN "group" ON "group".id = domainlist_by_group.group_id
     WHERE domainlist.enabled = 1 AND (domainlist_by_group.group_id IS NULL OR "group".enabled = 1)
-    AND domainlist.type = 2
-    ORDER BY domainlist.id;
+    AND domainlist.type = 2;
 
 CREATE VIEW vw_regex_denylist AS SELECT domain, domainlist.id AS id, domainlist_by_group.group_id AS group_id
     FROM domainlist
     LEFT JOIN domainlist_by_group ON domainlist_by_group.domainlist_id = domainlist.id
     LEFT JOIN "group" ON "group".id = domainlist_by_group.group_id
     WHERE domainlist.enabled = 1 AND (domainlist_by_group.group_id IS NULL OR "group".enabled = 1)
-    AND domainlist.type = 3
-    ORDER BY domainlist.id;
+    AND domainlist.type = 3;
 
 CREATE VIEW vw_gravity AS SELECT domain, adlist.id AS adlist_id, adlist_by_group.group_id AS group_id
     FROM gravity
@@ -243,6 +241,7 @@ INSERT INTO antigravity VALUES('antigravity.ftl',2);
 INSERT INTO antigravity VALUES('@@||antigravity.ftl^',2);
 
 INSERT INTO info VALUES('gravity_count',8);
+INSERT INTO info VALUES('antigravity_count',2);
 INSERT INTO info VALUES('abp_domains',1);
 INSERT INTO info VALUES('updated',0);
 
