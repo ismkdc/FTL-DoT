@@ -1,0 +1,66 @@
+#!./test/libs/bats/bin/bats
+# Final log validation and FTL termination tests.
+# This file runs AFTER both test_suite.bats and the pytest API tests
+# to catch any unexpected log messages produced during the entire run.
+
+@test "No WARNING messages in FTL.log (besides known warnings)" {
+  run bash -c 'grep "WARNING:" /var/log/pihole/FTL.log | grep -v -E "CAP_NET_ADMIN|CAP_NET_RAW|CAP_SYS_NICE|CAP_IPC_LOCK|CAP_CHOWN|CAP_NET_BIND_SERVICE|CAP_SYS_TIME|FTLCONF_|(Negative DS reply without NS record received for ftl)|(nameserver 127.0.0.1 refused to do a recursive query)|API: Config item is invalid|API: Config item validation failed|API: Not found|API: Config items set via environment variables|API: Rate-limiting login attempts|free NULL pointer in printFTLenv"'
+  printf "%s\n" "${lines[@]}"
+  [[ "${lines[@]}" == "" ]]
+}
+
+@test "No ERROR messages in FTL.log (besides known/intended errors)" {
+  run bash -c 'grep "ERROR: " /var/log/pihole/FTL.log'
+  printf "%s\n" "${lines[@]}"
+  run bash -c 'grep "ERROR: " /var/log/pihole/FTL.log | grep -c -v -E "(index\.html)|(Failed to create shared memory object)|(FTLCONF_debug_api is not a boolean)|(FTLCONF_files_pcap)|(Failed to set|adjust time during NTP sync: Insufficient permissions)|(nlrequest error)|(Failed to read ARP cache)"'
+  printf "count: %s\n" "${lines[@]}"
+  [[ ${lines[0]} == "0" ]]
+}
+
+@test "No CRIT messages in FTL.log (besides error due to starting FTL more than once)" {
+  run bash -c 'grep "CRIT:" /var/log/pihole/FTL.log | grep -v "CRIT: pihole-FTL is already running"'
+  printf "%s\n" "${lines[@]}"
+  [[ "${lines[@]}" == "" ]]
+}
+
+@test "No \"DB not available\" messages in FTL.log" {
+  run bash -c 'grep -c "database not available" /var/log/pihole/FTL.log'
+  printf "%s\n" "${lines[@]}"
+  [[ ${lines[0]} == "0" ]]
+}
+
+@test "Expected number of config file rotations" {
+  # BATS:   1x pihole.toml write (dns.reply.host API PATCH)
+  # BATS:   2x pihole.toml writes (CLI password set/remove processes)
+  # pytest: 3x pihole.toml writes (password, app_pwhash, serve_all via API)
+  run bash -c 'grep -c "INFO: Config file written to /etc/pihole/pihole.toml" /var/log/pihole/FTL.log'
+  printf "pihole.toml write count: %s\n" "${lines[0]}"
+  [[ ${lines[0]} == "6" ]]
+  # CLI password set/remove trigger inotify reload but result in
+  # "pihole.toml unchanged" as the in-memory config already matches
+  run bash -c 'grep -c "pihole.toml unchanged" /var/log/pihole/FTL.log'
+  printf "pihole.toml unchanged count: %s\n" "${lines[0]}"
+  [[ ${lines[0]} -ge 2 ]]
+  run bash -c 'grep -c "DEBUG_CONFIG: Config file written to /etc/pihole/dnsmasq.conf" /var/log/pihole/FTL.log'
+  printf "dnsmasq.conf write count: %s\n" "${lines[0]}"
+  [[ ${lines[0]} == "1" ]]
+  run bash -c 'grep -c "DEBUG_CONFIG: HOSTS file written to /etc/pihole/hosts/custom.list" /var/log/pihole/FTL.log'
+  printf "custom.list write count: %s\n" "${lines[0]}"
+  [[ ${lines[0]} == "3" ]]
+}
+
+@test "FTL terminates with message" {
+  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
+  # Kill pihole-FTL after having completed all tests
+  pid=$(cat /run/pihole-FTL.pid)
+  printf "Killing pihole-FTL with PID %s\n" "$pid"
+
+  run bash -c "kill $pid"
+  printf "%s\n" "${lines[@]}"
+  [[ $status == 0 ]]
+
+  # Wait until pihole-FTL has terminated
+  run bash -c "./pihole-FTL wait-for '########## FTL terminated after' /var/log/pihole/FTL.log 30 $logsize_before"
+  printf "%s\n" "${lines[@]}"
+  [[ $status == 0 ]]
+}
