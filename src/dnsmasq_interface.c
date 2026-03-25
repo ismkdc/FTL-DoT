@@ -1083,7 +1083,7 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 		// block all other threads (API, database, GC, TCP workers).
 		unlock_shm();
 
-		unsigned char hwaddr[16];
+		unsigned char hwaddr[16] = {0};
 		const int hwlen = find_mac(addr, hwaddr, 1, time(NULL));
 
 		// Reacquire lock and re-fetch client pointer (SHM may have
