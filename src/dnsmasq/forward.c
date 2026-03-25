@@ -751,7 +751,7 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
       // it might get stripped off below (added_pheader == true)
       FTL_parse_pseudoheaders(pheader, (size_t)plen);
       
-      if (option_bool(OPT_CLIENT_SUBNET) && !check_source(header, plen, pheader, query_source))
+      if (option_bool(OPT_CLIENT_SUBNET) && !check_source(header, n, pheader, query_source))
 	{
 	  my_syslog(LOG_WARNING, _("discarding DNS reply: subnet option mismatch"));
 	  return 0;
