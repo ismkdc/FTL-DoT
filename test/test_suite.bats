@@ -778,31 +778,8 @@ setup() {
   [[ "${lines[0]}" == "80o,443os,[::]:80o,[::]:443os" ]]
 }
 
-@test "No WARNING messages in FTL.log (besides known warnings)" {
-  run bash -c 'grep "WARNING:" /var/log/pihole/FTL.log | grep -v -E "CAP_NET_ADMIN|CAP_NET_RAW|CAP_SYS_NICE|CAP_IPC_LOCK|CAP_CHOWN|CAP_NET_BIND_SERVICE|CAP_SYS_TIME|FTLCONF_|(Negative DS reply without NS record received for ftl)|(nameserver 127.0.0.1 refused to do a recursive query)"'
-  printf "%s\n" "${lines[@]}"
-  [[ "${lines[@]}" == "" ]]
-}
-
-@test "No ERROR messages in FTL.log (besides known/intended error)" {
-  run bash -c 'grep "ERROR: " /var/log/pihole/FTL.log'
-  printf "%s\n" "${lines[@]}"
-  run bash -c 'grep "ERROR: " /var/log/pihole/FTL.log | grep -c -v -E "(index\.html)|(Failed to create shared memory object)|(FTLCONF_debug_api is not a boolean)|(FTLCONF_files_pcap files.pcap: not a valid file path)|(Failed to set|adjust time during NTP sync: Insufficient permissions)|(nlrequest error)|(Failed to read ARP cache)"'
-  printf "count: %s\n" "${lines[@]}"
-  [[ ${lines[0]} == "0" ]]
-}
-
-@test "No CRIT messages in FTL.log (besides error due to starting FTL more than once)" {
-  run bash -c 'grep "CRIT:" /var/log/pihole/FTL.log | grep -v "CRIT: pihole-FTL is already running"'
-  printf "%s\n" "${lines[@]}"
-  [[ "${lines[@]}" == "" ]]
-}
-
-@test "No \"DB not available\" messages in FTL.log" {
-  run bash -c 'grep -c "database not available" /var/log/pihole/FTL.log'
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "0" ]]
-}
+# NOTE: Log validation (WARNING/ERROR/CRIT/DB checks) moved to the final
+# log scan in run.sh, which runs after both BATS and pytest complete.
 
 # Regex tests
 @test "Compiled deny regex as expected" {
@@ -1876,7 +1853,13 @@ setup() {
 
 @test "CLI: Setting and removing password leaves no net change" {
   # Set password via CLI
+  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
   run bash -c './pihole-FTL --config webserver.api.password ABC'
+  printf "%s\n" "${lines[@]}"
+  [[ $status == 0 ]]
+
+  # Wait for the running FTL instance to pick up the config file change
+  run bash -c "./pihole-FTL wait-for 'pihole.toml unchanged' /var/log/pihole/FTL.log 5 $logsize_before"
   printf "%s\n" "${lines[@]}"
   [[ $status == 0 ]]
 
@@ -1891,7 +1874,13 @@ setup() {
   [[ ${lines[0]} == "true" ]]
 
   # Remove password via CLI
+  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
   run bash -c './pihole-FTL --config webserver.api.password ""'
+  printf "%s\n" "${lines[@]}"
+  [[ $status == 0 ]]
+
+  # Wait for the running FTL instance to pick up the config file change
+  run bash -c "./pihole-FTL wait-for 'pihole.toml unchanged' /var/log/pihole/FTL.log 5 $logsize_before"
   printf "%s\n" "${lines[@]}"
   [[ $status == 0 ]]
 
@@ -2083,20 +2072,7 @@ setup() {
   run bash -c "rm ${filename}"
 }
 
-@test "Expected number of config file rotations" {
-  # 1. Setting force4 = true (and others)
-  # 2. Setting dns.blocking.mode = "IP"
-  # 3. PATCH /api/config/webserver/api/password
-  run bash -c 'grep -c "INFO: Config file written to /etc/pihole/pihole.toml" /var/log/pihole/FTL.log'
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "3" ]]
-  run bash -c 'grep -c "DEBUG_CONFIG: Config file written to /etc/pihole/dnsmasq.conf" /var/log/pihole/FTL.log'
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
-  run bash -c 'grep -c "DEBUG_CONFIG: HOSTS file written to /etc/pihole/hosts/custom.list" /var/log/pihole/FTL.log'
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "3" ]]
-}
+# NOTE: Config file rotation count test moved to test_final.bats
 
 @test "Suggest expected completions" {
   run bash -c './pihole-FTL --complete pihole-FTL versio'
@@ -2115,7 +2091,15 @@ setup() {
 }
 
 @test "Query with ID 0 has been saved to the database" {
-  run bash -c './pihole-FTL sqlite3 /etc/pihole/pihole-FTL.db "SELECT COUNT(*) FROM queries WHERE id=0;"'
+  # FTL exports queries from in-memory DB to disk after a configurable
+  # delay (default 30s). Poll up to 60s for the export to complete.
+  for i in $(seq 1 30); do
+    run bash -c './pihole-FTL sqlite3 /etc/pihole/pihole-FTL.db "SELECT COUNT(*) FROM queries WHERE id=0;"'
+    if [[ ${lines[0]} == "1" ]]; then
+      break
+    fi
+    sleep 2
+  done
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
 }
@@ -2149,19 +2133,4 @@ setup() {
   [[ $status == 0 ]]
 }
 
-@test "FTL terminates with message" {
-  logsize_before=$(stat -c%s /var/log/pihole/FTL.log)
-  # Kill pihole-FTL after having completed tests
-  # This will also shut down the debugger
-  pid=$(cat /run/pihole-FTL.pid)
-  printf "Killing pihole-FTL with PID %s\n" "$pid"
-
-  run bash -c "kill $pid"
-  printf "%s\n" "${lines[@]}"
-  [[ $status == 0 ]]
-
-  # Wait until pihole-FTL has terminated
-  run bash -c "./pihole-FTL wait-for '########## FTL terminated after' /var/log/pihole/FTL.log 30 $logsize_before"
-  printf "%s\n" "${lines[@]}"
-  [[ $status == 0 ]]
-}
+# NOTE: FTL termination test moved to run.sh (runs after both BATS and pytest)

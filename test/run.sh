@@ -80,9 +80,6 @@ export FTLCONF_debug_api="not_a_bool"
 export FTLCONF_MISC_CHECK_SHMEM=91
 export FTLCONF_files_pcap='*123#./test/pcap'
 
-# Prepare gdb session
-echo "handle SIGHUP nostop SIGPIPE nostop SIGTERM nostop SIG32 nostop SIG33 nostop SIG34 nostop SIG35 nostop SIG41 nostop" > /root/.gdbinit
-
 # Start FTL
 if ! su pihole -s /bin/sh -c /home/pihole/pihole-FTL; then
   echo "pihole-FTL failed to start"
@@ -92,9 +89,11 @@ fi
 # Give FTL some time for startup preparations
 sleep 2
 
-# Attach debugger and immediately continue running the binary
-# In case a non-ignored signal occurs (a crash), create a full backtrace
-gdb -p $(cat /run/pihole-FTL.pid) --ex continue --ex "bt full" &
+# Optionally attach gdb for crash backtraces (opt-in via GDB=1)
+if [[ "${GDB}" == "1" ]]; then
+  echo "handle SIGHUP nostop SIGPIPE nostop SIGTERM nostop SIG32 nostop SIG33 nostop SIG34 nostop SIG35 nostop SIG41 nostop" > /root/.gdbinit
+  gdb -p $(cat /run/pihole-FTL.pid) --ex continue --ex "bt full" &
+fi
 
 # Print versions of pihole-FTL
 echo -n "FTL version (DNS): "
@@ -117,29 +116,36 @@ sleep 1
 
 RET=0
 
-# Run pytest API tests first (OpenAPI validation, rate limiting).
-# These must run before BATS because the BATS suite terminates FTL
-# as its final test.
-echo "Running pytest API tests..."
-python3 -m pytest test/api/ -v
+# Prepare BATS
+if [ -z "$BATS" ]; then
+  mkdir -p test/libs
+  git clone --depth=1 --quiet https://github.com/bats-core/bats-core test/libs/bats > /dev/null
+  BATS=test/libs/bats/bin/bats
+fi
+
+# Run BATS test suite (includes DNS, regex, CLI, config tests;
+# terminates FTL as its final test)
+echo "Running BATS test suite..."
+$BATS -p "test/test_suite.bats"
 RET=$?
 
-# Run BATS test suite (skipped when SKIP_BATS=1, e.g. via "test-api")
-if [[ "${SKIP_BATS}" != "1" ]]; then
-  if [ -z "$BATS" ]; then
-    mkdir -p test/libs
-    git clone --depth=1 --quiet https://github.com/bats-core/bats-core test/libs/bats > /dev/null
-    BATS=test/libs/bats/bin/bats
-  fi
+# Run pytest API tests (FTL is still running — BATS no longer terminates it)
+echo "Running pytest API tests..."
+python3 -m pytest test/api/ -v
+PYTEST_RET=$?
+if [[ $PYTEST_RET != 0 ]]; then
+  RET=$PYTEST_RET
+fi
 
-  echo "Running BATS test suite..."
-  $BATS -p "test/test_suite.bats"
-  BATS_RET=$?
-
-  # Combine exit codes: fail if either suite failed
-  if [[ $BATS_RET != 0 ]]; then
-    RET=$BATS_RET
-  fi
+# Run final BATS suite — log validation and FTL termination
+# This runs after both test_suite.bats and pytest to catch any
+# unexpected log messages from the entire run, then terminates FTL.
+echo ""
+echo "Running final log validation..."
+$BATS -p "test/test_final.bats"
+FINAL_RET=$?
+if [[ $FINAL_RET != 0 ]]; then
+  RET=$FINAL_RET
 fi
 
 curl_to_tricorder() {

@@ -42,7 +42,6 @@ do
         "dev"            ) dev=1;;
         "test"           ) test=1;;
         "test-fast"      ) test=1; export SKIP_PERF_TEST=1;;
-        "test-api"       ) test=1; export SKIP_BATS=1; export SKIP_PERF_TEST=1;;
         "clean-logs"     ) clean_logs=1;;
         "clang"          ) clang=1;;
         "ci"             ) builddir="cmake_ci/";;
