@@ -20,14 +20,21 @@ FTL_URL = "http://127.0.0.1"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _j(response):
+def _j(response, dump=None):
     """Return parsed JSON, stripping the volatile ``took`` field.
 
-    Attach the raw text so pytest prints the full body on assertion
-    failure (via ``__repr__``).
+    If *dump* is given, write the full response to
+    ``/tmp/ftl_test_<dump>.json`` (best-effort, ignored on failure)
+    so the expected values can be inspected after a test run.
     """
     data = response.json()
     data.pop("took", None)
+    if dump:
+        try:
+            with open(f"/tmp/ftl_test_{dump}.json", "w") as f:
+                json.dump(data, f, indent=2)
+        except OSError:
+            pass
     return data
 
 
@@ -340,3 +347,423 @@ class TestLuaServerPages:
         r = api_session.get(f"{FTL_URL}/broken_lua", timeout=5)
         lines = r.text.splitlines()
         assert lines[0] == "Hello, world 1!", f"Unexpected response:\n{r.text}"
+
+
+# ---------------------------------------------------------------------------
+# DNS blocking status
+# ---------------------------------------------------------------------------
+
+class TestDNSBlocking:
+
+    def test_blocking_enabled(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/dns/blocking", timeout=5))
+        assert data["blocking"] == "enabled"
+        assert data["timer"] is None
+
+
+# ---------------------------------------------------------------------------
+# Domains
+# ---------------------------------------------------------------------------
+
+class TestDomains:
+
+    def test_allow_exact(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/domains/allow/exact", timeout=5))
+        domains = data["domains"]
+        names = [d["domain"] for d in domains]
+        assert "allowed.ftl" in names, json.dumps(domains, indent=2)
+        assert "regex1.ftl" in names
+        assert "mask.icloud.com" in names
+        for d in domains:
+            assert d["type"] == "allow"
+            assert d["kind"] == "exact"
+
+    def test_allow_regex(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/domains/allow/regex", timeout=5))
+        domains = data["domains"]
+        assert len(domains) == 2, json.dumps(domains, indent=2)
+        assert domains[0] == {
+            "domain": "regex2", "unicode": "regex2",
+            "type": "allow", "kind": "regex", "comment": "",
+            "groups": [0], "enabled": True,
+            "id": 3, "date_added": 1559928803, "date_modified": 1559928803,
+        }
+        assert domains[1]["domain"] == "^gravity-allowed"
+        assert domains[1]["id"] == 4
+
+    def test_deny_exact(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/domains/deny/exact", timeout=5))
+        domains = data["domains"]
+        names = [d["domain"] for d in domains]
+        assert "denied.ftl" in names, json.dumps(domains, indent=2)
+        assert "blacklisted-group-disabled.com" in names
+        for d in domains:
+            assert d["type"] == "deny"
+            assert d["kind"] == "exact"
+
+    def test_deny_regex(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/domains/deny/regex", timeout=5))
+        domains = data["domains"]
+        assert len(domains) == 11, \
+            f"Expected 11 deny regex, got {len(domains)}:\n{json.dumps(domains, indent=2)}"
+        assert domains[0]["domain"] == "regex[0-9].ftl"
+        assert domains[0]["id"] == 6
+        assert domains[0]["groups"] == [0, 2]
+        for d in domains:
+            assert d["type"] == "deny"
+            assert d["kind"] == "regex"
+
+    def test_all_domains(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/domains", timeout=5))
+        domains = data["domains"]
+        types = {d["type"] for d in domains}
+        kinds = {d["kind"] for d in domains}
+        assert types == {"allow", "deny"}
+        assert kinds == {"exact", "regex"}
+
+    def test_single_domain_lookup(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/domains/deny/exact/denied.ftl", timeout=5))
+        domains = data["domains"]
+        assert len(domains) == 1, json.dumps(domains, indent=2)
+        assert domains[0]["domain"] == "denied.ftl"
+        assert domains[0]["comment"] == "Migrated from /etc/pihole/blacklist.txt"
+
+
+# ---------------------------------------------------------------------------
+# Groups
+# ---------------------------------------------------------------------------
+
+class TestGroups:
+
+    def test_all_groups(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/groups", timeout=5))
+        groups = data["groups"]
+        assert len(groups) == 6, json.dumps(groups, indent=2)
+        names = {g["name"] for g in groups}
+        assert "Default" in names
+        assert "Test group" in names
+        assert "Second test group" in names
+
+        default = next(g for g in groups if g["name"] == "Default")
+        assert default["id"] == 0
+        assert default["enabled"] is True
+        assert default["comment"] == "The default group"
+
+        disabled = next(g for g in groups if g["name"] == "Test group")
+        assert disabled["id"] == 1
+        assert disabled["enabled"] is False
+
+    def test_single_group_lookup(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/groups/Default", timeout=5))
+        groups = data["groups"]
+        assert len(groups) == 1, json.dumps(groups, indent=2)
+        assert groups[0]["name"] == "Default"
+        assert groups[0]["id"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Stats summary
+# ---------------------------------------------------------------------------
+
+class TestStatsSummary:
+
+    def test_summary_structure(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/stats/summary", timeout=5), dump="stats_summary")
+        q = data["queries"]
+        assert q["total"] == 137, json.dumps(data, indent=2)
+        assert q["blocked"] == 49
+        assert q["forwarded"] == 47
+        assert q["cached"] == 41
+        assert q["unique_domains"] == 77
+        assert q["status"]["UNKNOWN"] == 0
+        assert q["status"]["GRAVITY"] == 7
+        assert q["status"]["FORWARDED"] == 47
+        assert q["status"]["CACHE"] == 41
+        assert q["status"]["REGEX"] == 21
+        assert q["status"]["DENYLIST"] == 4
+        assert q["status"]["SPECIAL_DOMAIN"] == 2
+        assert q["types"]["A"] == 69
+        assert q["types"]["AAAA"] == 19
+
+        assert data["clients"]["active"] == 11
+        assert data["clients"]["total"] == 11
+        assert data["gravity"]["domains_being_blocked"] == 8
+
+
+# ---------------------------------------------------------------------------
+# Stats: top domains
+# ---------------------------------------------------------------------------
+
+class TestStatsTopDomains:
+
+    def test_top_domains_sorted_descending(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/stats/top_domains", timeout=5), dump="top_domains")
+        domains = data["domains"]
+        assert len(domains) > 0
+        counts = [d["count"] for d in domains]
+        assert counts == sorted(counts, reverse=True), \
+            f"Not sorted descending: {counts}"
+        assert data["total_queries"] == 137
+        assert data["blocked_queries"] == 49
+
+    def test_top_domains_blocked(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/stats/top_domains?blocked=true", timeout=5))
+        domains = data["domains"]
+        names = [d["domain"] for d in domains]
+        assert "gravity.ftl" in names, json.dumps(domains, indent=2)
+        counts = [d["count"] for d in domains]
+        assert counts == sorted(counts, reverse=True)
+
+    def test_top_domains_permitted_excludes_gravity(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/stats/top_domains?blocked=false", timeout=5))
+        names = [d["domain"] for d in data["domains"]]
+        assert "gravity.ftl" not in names, \
+            f"gravity.ftl should not be in permitted domains:\n{json.dumps(data, indent=2)}"
+
+
+# ---------------------------------------------------------------------------
+# Stats: top clients
+# ---------------------------------------------------------------------------
+
+class TestStatsTopClients:
+
+    def test_top_clients_sorted_descending(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/stats/top_clients", timeout=5), dump="top_clients")
+        clients = data["clients"]
+        assert len(clients) > 0
+        assert clients[0]["ip"] == "127.0.0.1"
+        counts = [c["count"] for c in clients]
+        assert counts == sorted(counts, reverse=True), \
+            f"Not sorted descending: {counts}"
+        assert data["total_queries"] == 137
+
+
+# ---------------------------------------------------------------------------
+# Stats: upstreams
+# ---------------------------------------------------------------------------
+
+class TestStatsUpstreams:
+
+    def test_upstreams(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/stats/upstreams", timeout=5), dump="upstreams")
+        upstreams = data["upstreams"]
+        assert len(upstreams) == 4, json.dumps(upstreams, indent=2)
+        assert data["total_queries"] == 137
+        assert data["forwarded_queries"] == 47
+
+        blocklist = next(u for u in upstreams if u["ip"] == "blocklist")
+        assert blocklist["count"] == 49
+        assert blocklist["port"] == -1
+
+        cache = next(u for u in upstreams if u["ip"] == "cache")
+        assert cache["count"] == 41
+        assert cache["port"] == -1
+
+
+# ---------------------------------------------------------------------------
+# Stats: query types
+# ---------------------------------------------------------------------------
+
+class TestStatsQueryTypes:
+
+    def test_query_types(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/stats/query_types", timeout=5), dump="query_types")
+        assert data["types"] == {
+            "A": 69, "AAAA": 19, "ANY": 3, "SRV": 1, "SOA": 0,
+            "PTR": 8, "TXT": 10, "NAPTR": 1, "MX": 1, "DS": 7,
+            "RRSIG": 0, "DNSKEY": 9, "NS": 0, "SVCB": 3, "HTTPS": 3,
+            "OTHER": 1,
+        }, json.dumps(data, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Stats: recent blocked
+# ---------------------------------------------------------------------------
+
+class TestStatsRecentBlocked:
+
+    def test_recent_blocked(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/stats/recent_blocked", timeout=5))
+        assert "denied.ftl" in data["blocked"], json.dumps(data, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Stats: database endpoints (require from/until parameters)
+# ---------------------------------------------------------------------------
+
+class TestStatsDatabase:
+
+    def test_database_endpoints_require_time_range(self, api_session):
+        """Database stats endpoints return 400 without from/until."""
+        for endpoint in ("query_types", "summary", "top_clients",
+                         "top_domains", "upstreams"):
+            data = _j(api_session.get(
+                f"{FTL_URL}/api/stats/database/{endpoint}", timeout=5))
+            assert data["error"]["key"] == "bad_request", \
+                f"/api/stats/database/{endpoint}: {json.dumps(data, indent=2)}"
+            assert "from" in data["error"]["message"]
+            assert "until" in data["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# DHCP leases
+# ---------------------------------------------------------------------------
+
+class TestDHCPLeases:
+
+    def test_no_leases(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/dhcp/leases", timeout=5))
+        assert data["leases"] == []
+
+
+# ---------------------------------------------------------------------------
+# Endpoints listing
+# ---------------------------------------------------------------------------
+
+class TestEndpoints:
+
+    def test_endpoints_has_all_methods(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/endpoints", timeout=5))
+        eps = data["endpoints"]
+        for method in ("get", "post", "put", "patch", "delete"):
+            assert method in eps, f"Missing method '{method}':\n{json.dumps(eps.keys(), indent=2)}"
+        # GET should have the most endpoints
+        assert len(eps["get"]) > 20
+
+
+# ---------------------------------------------------------------------------
+# Info endpoints
+# ---------------------------------------------------------------------------
+
+class TestInfo:
+
+    def test_info_ftl(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/ftl", timeout=5), dump="info_ftl")
+        ftl = data["ftl"]
+        db = ftl["database"]
+        assert db["gravity"] == 8, json.dumps(db, indent=2)
+        assert db["groups"] == 5
+        assert db["lists"] == 2
+        assert db["clients"] == 5
+        assert db["domains"]["allowed"] == {"total": 3, "enabled": 3}
+        assert db["domains"]["denied"] == {"total": 2, "enabled": 2}
+        assert db["regex"]["allowed"] == {"total": 2, "enabled": 2}
+        assert db["regex"]["denied"] == {"total": 11, "enabled": 11}
+        assert ftl["privacy_level"] == 0
+        assert ftl["clients"]["total"] == 11
+        assert ftl["clients"]["active"] == 11
+
+    def test_info_login(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/login", timeout=5))
+        assert data["dns"] is True
+        assert data["https_port"] == 443
+
+    def test_info_version(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/version", timeout=5))
+        v = data["version"]
+        assert "ftl" in v
+        assert "local" in v["ftl"]
+        assert v["ftl"]["local"]["version"].startswith("v")
+        assert "hash" in v["ftl"]["local"]
+
+    def test_info_messages(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/messages", timeout=5))
+        assert "messages" in data
+        assert isinstance(data["messages"], list)
+
+    def test_info_messages_count(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/messages/count", timeout=5))
+        assert "count" in data
+        assert isinstance(data["count"], int)
+
+    def test_info_client(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/client", timeout=5))
+        assert data["remote_addr"] == "127.0.0.1"
+        assert data["http_version"] == "1.1"
+        assert data["method"] == "GET"
+
+    def test_info_database(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/database", timeout=5))
+        assert data["type"] == "Regular file"
+        assert data["mode"] == "rw-r-----"
+        assert data["owner"]["user"]["name"] == "pihole"
+        assert data["owner"]["group"]["name"] == "pihole"
+        assert data["queries"] > 0
+        assert data["sqlite_version"].startswith("3.")
+
+    def test_info_system(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/system", timeout=5))
+        s = data["system"]
+        assert "uptime" in s
+        assert s["memory"]["ram"]["total"] > 0
+        assert s["cpu"]["nprocs"] > 0
+        assert "ftl" in s
+        assert "%mem" in s["ftl"]
+        assert "%cpu" in s["ftl"]
+
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+
+class TestNetwork:
+
+    def test_network_devices(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/network/devices", timeout=5))
+        devices = data["devices"]
+        hwaddrs = [d["hwaddr"] for d in devices]
+        assert "aa:bb:cc:dd:ee:ff" in hwaddrs, json.dumps(hwaddrs, indent=2)
+        assert "ip-127.0.0.1" in hwaddrs
+
+    def test_network_interfaces(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/network/interfaces", timeout=5))
+        ifaces = data["interfaces"]
+        names = [i["name"] for i in ifaces]
+        assert "lo" in names, json.dumps(names, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+
+class TestLogs:
+
+    def test_dnsmasq_log(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/logs/dnsmasq", timeout=5))
+        assert len(data["log"]) > 0
+        entry = data["log"][0]
+        assert "timestamp" in entry
+        assert "message" in entry
+
+    def test_ftl_log(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/logs/ftl", timeout=5))
+        assert len(data["log"]) > 0
+        entry = data["log"][0]
+        assert "timestamp" in entry
+        assert "message" in entry
+        assert "prio" in entry
+
+    def test_webserver_log(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/logs/webserver", timeout=5))
+        assert len(data["log"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# PADD
+# ---------------------------------------------------------------------------
+
+class TestPADD:
+
+    def test_padd(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/padd", timeout=5), dump="padd")
+        assert data["blocking"] == "enabled"
+        assert data["gravity_size"] == 8
+        assert data["active_clients"] == 11
+        assert data["top_domain"] == "."
+        assert data["top_blocked"] == "gravity.ftl"
+        assert data["top_client"] == "127.0.0.1"
+        q = data["queries"]
+        assert q["total"] == 137, json.dumps(data, indent=2)
+        assert q["blocked"] == 49
+        cache = data["cache"]
+        assert cache["size"] == 10000
