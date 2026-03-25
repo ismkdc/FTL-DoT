@@ -1311,6 +1311,7 @@ void parse_neighbor_cache(sqlite3 *db)
 	if(client_status == NULL)
 	{
 		log_err("parse_neighbor_cache(): Failed to allocate client_status array (%d entries)", clients);
+		dbquery(db, "ROLLBACK");
 		return;
 	}
 	for(int i = 0; i < clients; i++)
