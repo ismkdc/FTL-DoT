@@ -89,13 +89,6 @@ if ! su pihole -s /bin/sh -c /home/pihole/pihole-FTL; then
   exit 1
 fi
 
-# Prepare BATS
-if [ -z "$BATS" ]; then
-  mkdir -p test/libs
-  git clone --depth=1 --quiet https://github.com/bats-core/bats-core test/libs/bats > /dev/null
-  BATS=test/libs/bats/bin/bats
-fi
-
 # Give FTL some time for startup preparations
 sleep 2
 
@@ -111,12 +104,43 @@ echo "FTL verbose version (CLI): "
 echo -n "Contained dnsmasq version (DNS): "
 dig TXT CHAOS version.bind @127.0.0.1 +short
 
-# Install py3-dnspython
-apk add --no-cache py3-dnspython
+# Install Python test dependencies
+apk add --no-cache py3-dnspython py3-requests py3-pytest py3-yaml
 
-# Run tests
-$BATS -p "test/test_suite.bats"
+# Pre-warm DNSSEC root key cache. dnsmasq's DNSSEC validation can
+# trigger internal DNSKEY queries for the root zone at unpredictable
+# times. By explicitly querying DNSKEY for "." first, we force the
+# root key into cache so all subsequent DNSSEC validation uses the
+# cached key. This makes the total query count deterministic.
+dig DNSKEY . @127.0.0.1 +dnssec > /dev/null 2>&1
+sleep 1
+
+RET=0
+
+# Run pytest API tests first (OpenAPI validation, rate limiting).
+# These must run before BATS because the BATS suite terminates FTL
+# as its final test.
+echo "Running pytest API tests..."
+python3 -m pytest test/api/ -v
 RET=$?
+
+# Run BATS test suite (skipped when SKIP_BATS=1, e.g. via "test-api")
+if [[ "${SKIP_BATS}" != "1" ]]; then
+  if [ -z "$BATS" ]; then
+    mkdir -p test/libs
+    git clone --depth=1 --quiet https://github.com/bats-core/bats-core test/libs/bats > /dev/null
+    BATS=test/libs/bats/bin/bats
+  fi
+
+  echo "Running BATS test suite..."
+  $BATS -p "test/test_suite.bats"
+  BATS_RET=$?
+
+  # Combine exit codes: fail if either suite failed
+  if [[ $BATS_RET != 0 ]]; then
+    RET=$BATS_RET
+  fi
+fi
 
 curl_to_tricorder() {
   curl --silent --upload-file "${1}" https://tricorder.pi-hole.net
@@ -146,9 +170,11 @@ fi
 # Restore umask
 umask "$OLDUMASK"
 
-# Run performance tests
-if ! su pihole -s /bin/sh -c "/home/pihole/pihole-FTL --perf"; then
-  echo "pihole-FTL --perf failed to start"
+# Run performance tests (skipped when SKIP_PERF_TEST=1, e.g. via "test-fast")
+if [[ "${SKIP_PERF_TEST}" != "1" ]]; then
+  if ! su pihole -s /bin/sh -c "/home/pihole/pihole-FTL --perf"; then
+    echo "pihole-FTL --perf failed to start"
+  fi
 fi
 
 # Remove copied file
