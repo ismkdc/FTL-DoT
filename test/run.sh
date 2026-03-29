@@ -124,7 +124,7 @@ if [ -z "$BATS" ]; then
 fi
 
 # Run BATS test suite (includes DNS, regex, CLI, config tests;
-# terminates FTL as its final test)
+# FTL remains running for the pytest API tests afterwards)
 echo "Running BATS test suite..."
 $BATS -p "test/test_suite.bats"
 RET=$?

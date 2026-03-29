@@ -83,7 +83,7 @@ class TestEndpointResponses:
                 if verifyer.teleporter_archive is not None:
                     teleporter_archive = verifyer.teleporter_archive
                 if len(errors) > 0:
-                    all_errors[path] = errors
+                    all_errors[path] = (verifyer.auth_method, errors)
 
         # Store teleporter archive for the teleporter tests
         TestEndpointResponses._teleporter_archive = teleporter_archive
@@ -91,9 +91,9 @@ class TestEndpointResponses:
         assert all_errors == {}, \
             "Endpoint response validation errors:\n" + \
             "\n".join(
-                f"  GET {path} ({verifyer.auth_method} auth):\n" +
+                f"  GET {path} ({auth} auth):\n" +
                 "\n".join(f"    - {e}" for e in errs)
-                for path, errs in all_errors.items()
+                for path, (auth, errs) in all_errors.items()
             )
 
     # Store across test instances
