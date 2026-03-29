@@ -35,7 +35,12 @@
   # pytest: 3x pihole.toml writes (password, app_pwhash, serve_all via API)
   run bash -c 'grep -c "INFO: Config file written to /etc/pihole/pihole.toml" /var/log/pihole/FTL.log'
   printf "pihole.toml write count: %s\n" "${lines[0]}"
-  [[ ${lines[0]} == "6" ]]
+  # On RISCV64, pytest is skipped (too slow), so only BATS writes occur
+  if [[ "${CI_ARCH}" == "linux/riscv64" ]]; then
+    [[ ${lines[0]} == "1" ]]
+  else
+    [[ ${lines[0]} == "6" ]]
+  fi
   # CLI password set/remove trigger inotify reload but result in
   # "pihole.toml unchanged" as the in-memory config already matches
   run bash -c 'grep -c "pihole.toml unchanged" /var/log/pihole/FTL.log'
