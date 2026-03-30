@@ -4,7 +4,7 @@
 # to catch any unexpected log messages produced during the entire run.
 
 @test "No WARNING messages in FTL.log (besides known warnings)" {
-  run bash -c 'grep "WARNING:" /var/log/pihole/FTL.log | grep -v -E "CAP_NET_ADMIN|CAP_NET_RAW|CAP_SYS_NICE|CAP_IPC_LOCK|CAP_CHOWN|CAP_NET_BIND_SERVICE|CAP_SYS_TIME|FTLCONF_|(Negative DS reply without NS record received for ftl)|(nameserver 127.0.0.1 refused to do a recursive query)|API: Config item is invalid|API: Config item validation failed|API: Not found|API: Config items set via environment variables|API: Rate-limiting login attempts|API: You need to specify both"'
+  run bash -c 'grep "WARNING:" /var/log/pihole/FTL.log | grep -v -E "CAP_NET_ADMIN|CAP_NET_RAW|CAP_SYS_NICE|CAP_IPC_LOCK|CAP_CHOWN|CAP_NET_BIND_SERVICE|CAP_SYS_TIME|FTLCONF_|(Negative DS reply without NS record received for ftl)|(nameserver 127.0.0.1 refused to do a recursive query)|API: Config item is invalid|API: Config item validation failed|API: Not found|API: Config items set via environment variables|API: Rate-limiting login attempts|API: You need to specify both|API: No request body data|API: Invalid request"'
   printf "%s\n" "${lines[@]}"
   [[ "${lines[@]}" == "" ]]
 }
@@ -33,13 +33,16 @@
   # BATS:   1x pihole.toml write (dns.reply.host API PATCH)
   # BATS:   2x pihole.toml writes (CLI password set/remove processes)
   # pytest: 3x pihole.toml writes (password, app_pwhash, serve_all via API)
+  # pytest: 2x pihole.toml writes (dns/hosts config array PUT + DELETE)
+  # pytest: 2x pihole.toml writes (dns/blocking disable + enable)
+  # pytest: 4x pihole.toml writes (config PATCH round-trips: bool + int, change + restore each)
   run bash -c 'grep -c "INFO: Config file written to /etc/pihole/pihole.toml" /var/log/pihole/FTL.log'
   printf "pihole.toml write count: %s\n" "${lines[0]}"
   # On RISCV64, pytest is skipped (too slow), so only BATS writes occur
   if [[ "${CI_ARCH}" == "linux/riscv64" ]]; then
     [[ ${lines[0]} == "1" ]]
   else
-    [[ ${lines[0]} == "6" ]]
+    [[ ${lines[0]} == "14" ]]
   fi
   # CLI password set/remove trigger inotify reload but result in
   # "pihole.toml unchanged" as the in-memory config already matches
@@ -51,7 +54,13 @@
   [[ ${lines[0]} == "1" ]]
   run bash -c 'grep -c "DEBUG_CONFIG: HOSTS file written to /etc/pihole/hosts/custom.list" /var/log/pihole/FTL.log'
   printf "custom.list write count: %s\n" "${lines[0]}"
-  [[ ${lines[0]} == "3" ]]
+  # On RISCV64, pytest is skipped, so only BATS writes occur (3x)
+  # Otherwise, pytest dns/hosts config array PUT + DELETE add 2 more (5x)
+  if [[ "${CI_ARCH}" == "linux/riscv64" ]]; then
+    [[ ${lines[0]} == "3" ]]
+  else
+    [[ ${lines[0]} == "5" ]]
+  fi
 }
 
 @test "Query with ID 0 has been saved to the database" {

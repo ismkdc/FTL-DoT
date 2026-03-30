@@ -237,6 +237,15 @@ class TestDomainSearch:
             json.dumps(data, indent=2)
         assert data["search"]["results"]["total"] == 0
 
+    def test_partial_matching(self, api_session):
+        """Partial matching returns substring hits in gravity."""
+        data = _j(api_session.get(f"{FTL_URL}/api/search/gravity",
+                                  params={"partial": "true"}, timeout=5))
+        search = data["search"]
+        assert search["parameters"]["partial"] is True
+        assert search["results"]["total"] > 0, \
+            f"Expected partial matches for 'gravity':\n{json.dumps(data, indent=2)}"
+
 
 # ---------------------------------------------------------------------------
 # History
@@ -604,6 +613,44 @@ class TestStatsDatabase:
             assert "from" in data["error"]["message"]
             assert "until" in data["error"]["message"]
 
+    def test_database_summary_with_range(self, api_session):
+        data = _j(api_session.get(
+            f"{FTL_URL}/api/stats/database/summary?from=1&until=9999999999",
+            timeout=5))
+        for key in ("sum_queries", "sum_blocked", "percent_blocked",
+                     "total_clients"):
+            assert key in data, f"Missing key '{key}' in database summary"
+
+    def test_database_top_domains_with_range(self, api_session):
+        data = _j(api_session.get(
+            f"{FTL_URL}/api/stats/database/top_domains?from=1&until=9999999999",
+            timeout=5))
+        assert "domains" in data
+        assert isinstance(data["domains"], list)
+        assert "total_queries" in data
+
+    def test_database_top_clients_with_range(self, api_session):
+        data = _j(api_session.get(
+            f"{FTL_URL}/api/stats/database/top_clients?from=1&until=9999999999",
+            timeout=5))
+        assert "clients" in data
+        assert isinstance(data["clients"], list)
+        assert "total_queries" in data
+
+    def test_database_upstreams_with_range(self, api_session):
+        data = _j(api_session.get(
+            f"{FTL_URL}/api/stats/database/upstreams?from=1&until=9999999999",
+            timeout=5))
+        assert "upstreams" in data
+        assert isinstance(data["upstreams"], list)
+
+    def test_database_query_types_with_range(self, api_session):
+        data = _j(api_session.get(
+            f"{FTL_URL}/api/stats/database/query_types?from=1&until=9999999999",
+            timeout=5))
+        assert "types" in data
+        assert isinstance(data["types"], dict)
+
 
 # ---------------------------------------------------------------------------
 # DHCP leases
@@ -703,6 +750,24 @@ class TestInfo:
 
 
 # ---------------------------------------------------------------------------
+# Auth (read-only)
+# ---------------------------------------------------------------------------
+
+class TestAuthReadOnly:
+
+    def test_totp_suggestion(self, api_session):
+        """GET /api/auth/totp returns TOTP credential suggestions."""
+        data = _j(api_session.get(f"{FTL_URL}/api/auth/totp", timeout=5))
+        totp = data["totp"]
+        assert isinstance(totp["secret"], str)
+        assert len(totp["secret"]) > 0
+        assert totp["digits"] == 6
+        assert totp["period"] == 30
+        assert "algorithm" in totp
+        assert isinstance(totp["codes"], list)
+
+
+# ---------------------------------------------------------------------------
 # Network
 # ---------------------------------------------------------------------------
 
@@ -767,3 +832,283 @@ class TestPADD:
         assert q["blocked"] == 49
         cache = data["cache"]
         assert cache["size"] == 10000
+
+
+# ---------------------------------------------------------------------------
+# Clients
+# ---------------------------------------------------------------------------
+
+class TestClients:
+
+    def test_all_clients(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/clients", timeout=5))
+        clients = data["clients"]
+        assert len(clients) == 5, \
+            f"Expected 5 clients:\n{json.dumps(clients, indent=2)}"
+        names = [c["client"] for c in clients]
+        assert "127.0.0.1" in names
+        assert "127.0.0.2" in names
+        assert "aa:bb:cc:dd:ee:ff" in names
+        assert ":enp0s123" in names
+
+    def test_single_client_lookup(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/clients/127.0.0.1", timeout=5))
+        clients = data["clients"]
+        assert len(clients) == 1, json.dumps(clients, indent=2)
+        c = clients[0]
+        assert c["client"] == "127.0.0.1"
+        assert c["groups"] == [0]
+
+    def test_client_suggestions(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/clients/_suggestions", timeout=5))
+        assert "clients" in data
+        assert isinstance(data["clients"], list)
+
+
+# ---------------------------------------------------------------------------
+# Config (GET)
+# ---------------------------------------------------------------------------
+
+class TestConfigGet:
+
+    def test_full_config(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/config", timeout=5))
+        config = data["config"]
+        assert "dns" in config
+        assert "webserver" in config
+        assert "misc" in config
+        assert "debug" in config
+        assert "database" in config
+        assert config["dns"]["CNAMEdeepInspect"] is True
+        assert config["dns"]["blockESNI"] is True
+
+    def test_config_element(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/config/dns/upstreams", timeout=5))
+        config = data["config"]
+        upstreams = config["dns"]["upstreams"]
+        assert isinstance(upstreams, list)
+        assert len(upstreams) > 0
+
+
+# ---------------------------------------------------------------------------
+# Network (additional)
+# ---------------------------------------------------------------------------
+
+class TestNetworkAdditional:
+
+    def test_network_gateway(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/network/gateway", timeout=5))
+        assert "gateway" in data
+        assert isinstance(data["gateway"], list)
+
+    def test_network_routes(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/network/routes", timeout=5))
+        assert "routes" in data
+        assert isinstance(data["routes"], list)
+
+
+# ---------------------------------------------------------------------------
+# Info (additional)
+# ---------------------------------------------------------------------------
+
+class TestInfoAdditional:
+
+    def test_info_host(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/host", timeout=5))
+        host = data["host"]
+        uname = host["uname"]
+        assert "sysname" in uname
+        assert "nodename" in uname
+        assert "release" in uname
+        assert "machine" in uname
+
+    def test_info_sensors(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/sensors", timeout=5))
+        sensors = data["sensors"]
+        assert "list" in sensors
+        assert isinstance(sensors["list"], list)
+        assert "unit" in sensors
+
+    def test_info_metrics(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/info/metrics", timeout=5))
+        m = data["metrics"]
+        dns = m["dns"]
+        assert dns["cache"]["size"] > 0
+        assert "replies" in dns
+        assert dns["replies"]["sum"] > 0
+        assert "dhcp" in m
+
+
+# ---------------------------------------------------------------------------
+# Queries (additional)
+# ---------------------------------------------------------------------------
+
+class TestQueriesAdditional:
+
+    def test_queries_default(self, api_session):
+        """Default query (no filters) returns up to 100 results."""
+        data = _j(api_session.get(f"{FTL_URL}/api/queries", timeout=5))
+        assert "queries" in data
+        queries = data["queries"]
+        assert isinstance(queries, list)
+        assert len(queries) > 0
+        assert data["recordsTotal"] == 137
+        # Check structure of a query entry
+        q = queries[0]
+        assert "id" in q
+        assert "time" in q
+        assert "type" in q
+        assert "domain" in q
+        assert "status" in q
+        assert "client" in q
+        assert "ip" in q["client"]
+        assert "reply" in q
+        assert "type" in q["reply"]
+
+    def test_queries_with_length(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/queries?length=5", timeout=5))
+        assert len(data["queries"]) == 5
+
+    def test_queries_filter_by_type(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/queries?type=AAAA", timeout=5))
+        for q in data["queries"]:
+            assert q["type"] == "AAAA", \
+                f"Expected type AAAA, got {q['type']}"
+
+    def test_queries_filter_by_status(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/queries?status=GRAVITY", timeout=5))
+        assert data["recordsFiltered"] > 0
+        for q in data["queries"]:
+            assert q["status"] == "GRAVITY"
+
+    def test_queries_filter_by_domain(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/queries?domain=gravity.ftl", timeout=5))
+        assert data["recordsFiltered"] > 0
+        for q in data["queries"]:
+            assert q["domain"] == "gravity.ftl"
+
+    def test_queries_filter_by_client_ip(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/queries?client_ip=127.0.0.1", timeout=5))
+        assert data["recordsFiltered"] > 0
+        for q in data["queries"]:
+            assert q["client"]["ip"] == "127.0.0.1"
+
+    def test_queries_filter_by_upstream_blocklist(self, api_session):
+        """upstream=blocklist is a pseudo-upstream that matches all blocked queries."""
+        data = _j(api_session.get(f"{FTL_URL}/api/queries?upstream=blocklist", timeout=5))
+        assert data["recordsFiltered"] > 0
+        blocked_statuses = {"GRAVITY", "REGEX", "DENYLIST", "SPECIAL_DOMAIN",
+                            "GRAVITY_CNAME", "REGEX_CNAME", "DENYLIST_CNAME",
+                            "EXTERNAL_BLOCKED_IP", "EXTERNAL_BLOCKED_NULL",
+                            "EXTERNAL_BLOCKED_NXRA", "EXTERNAL_BLOCKED_EDE15",
+                            "DBBUSY"}
+        for q in data["queries"]:
+            assert q["status"] in blocked_statuses, \
+                f"Expected blocked status, got {q['status']}"
+
+    def test_queries_filter_by_upstream_address(self, api_session):
+        """Filtering by an actual upstream address."""
+        data = _j(api_session.get(
+            f"{FTL_URL}/api/queries?upstream=127.0.0.1%235555", timeout=5))
+        assert data["recordsFiltered"] > 0
+        for q in data["queries"]:
+            assert q["upstream"] == "127.0.0.1#5555"
+
+    def test_queries_cursor_pagination(self, api_session):
+        """Cursor + start offset returns non-overlapping pages."""
+        page1 = _j(api_session.get(f"{FTL_URL}/api/queries?length=5", timeout=5))
+        assert len(page1["queries"]) == 5
+        cursor = page1["cursor"]
+        assert isinstance(cursor, int)
+
+        # Page 2: same cursor, offset by start=5
+        page2 = _j(api_session.get(
+            f"{FTL_URL}/api/queries?length=5&cursor={cursor}&start=5", timeout=5))
+        assert len(page2["queries"]) == 5
+
+        ids1 = {q["id"] for q in page1["queries"]}
+        ids2 = {q["id"] for q in page2["queries"]}
+        assert ids1.isdisjoint(ids2), \
+            f"Pages overlap: {ids1 & ids2}"
+
+    def test_queries_suggestions(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/queries/suggestions", timeout=5))
+        s = data["suggestions"]
+        assert "domain" in s
+        assert "client_ip" in s
+        assert "type" in s
+        assert "status" in s
+        assert "reply" in s
+        assert isinstance(s["domain"], list)
+        assert len(s["domain"]) > 0
+        assert "127.0.0.1" in s["client_ip"]
+        assert "A" in s["type"]
+        assert "AAAA" in s["type"]
+
+
+# ---------------------------------------------------------------------------
+# History (additional -- database endpoints)
+# ---------------------------------------------------------------------------
+
+class TestHistoryDatabase:
+
+    def test_history_database_requires_params(self, api_session):
+        """Database history endpoints return 400 without from/until."""
+        data = _j(api_session.get(f"{FTL_URL}/api/history/database", timeout=5))
+        assert data["error"]["key"] == "bad_request"
+
+    def test_history_database_with_range(self, api_session):
+        data = _j(api_session.get(
+            f"{FTL_URL}/api/history/database?from=0&until=9999999999", timeout=5))
+        assert "history" in data
+        assert isinstance(data["history"], list)
+
+    def test_history_database_clients_requires_params(self, api_session):
+        data = _j(api_session.get(f"{FTL_URL}/api/history/database/clients", timeout=5))
+        assert data["error"]["key"] == "bad_request"
+
+    def test_history_database_clients_with_range(self, api_session):
+        data = _j(api_session.get(
+            f"{FTL_URL}/api/history/database/clients?from=1&until=9999999999", timeout=5))
+        assert "history" in data
+        assert "clients" in data
+
+
+# ---------------------------------------------------------------------------
+# NTP server (protocol-level, not HTTP)
+# ---------------------------------------------------------------------------
+
+class TestNTP:
+
+    def test_ntp_server_responds(self, api_session):
+        """FTL's built-in NTP server returns a valid NTPv4 response."""
+        import socket
+        import struct
+
+        # NTP v3 client request
+        request = b'\x1b' + 47 * b'\0'
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(2.0)
+        try:
+            sock.sendto(request, ('127.0.0.1', 123))
+            data, _ = sock.recvfrom(1024)
+        finally:
+            sock.close()
+
+        assert len(data) == 48, f"Expected 48-byte NTP packet, got {len(data)}"
+
+        # LI/VN/Mode byte: mode should be 4 (server)
+        mode = data[0] & 0x7
+        version = (data[0] >> 3) & 0x7
+        assert mode == 4, f"Expected NTP mode 4 (server), got {mode}"
+        assert version == 4, f"Expected NTPv4, got v{version}"
+
+        # Transmit timestamp (bytes 40-47): seconds since 1900-01-01
+        # should be close to current time (within 2 seconds)
+        import time
+        ntp_epoch_offset = 2208988800  # seconds between 1900 and 1970
+        tx_seconds = struct.unpack('!I', data[40:44])[0]
+        now_ntp = int(time.time()) + ntp_epoch_offset
+        drift = abs(tx_seconds - now_ntp)
+        assert drift <= 2, \
+            f"NTP transmit timestamp off by {drift}s (expected ≤2s)"

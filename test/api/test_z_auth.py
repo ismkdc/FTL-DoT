@@ -1,3 +1,4 @@
+
 """
 Pi-hole FTL API integration tests -- authentication workflow.
 
@@ -186,6 +187,75 @@ class TestAuthWorkflow:
         assert session["message"] == "password correct"
         assert isinstance(session["sid"], str) and len(session["sid"]) > 0
         assert isinstance(session["csrf"], str) and len(session["csrf"]) > 0
+
+    # -- 07b: explicit logout deletes session --
+
+    def test_07b_explicit_logout(self):
+        """DELETE /api/auth invalidates the current session (returns 204)."""
+        # Login to get a valid session
+        r = requests.post(
+            f"{FTL_URL}/api/auth",
+            json={"password": "ABC"},
+            timeout=5,
+        )
+        assert r.status_code == 200
+        sid = r.json()["session"]["sid"]
+        assert sid is not None
+
+        # Logout via DELETE
+        r = requests.delete(
+            f"{FTL_URL}/api/auth",
+            headers={"X-FTL-SID": sid},
+            timeout=5,
+        )
+        assert r.status_code == 204, \
+            f"Expected 204, got {r.status_code} {r.text}"
+
+        # Verify session is no longer valid
+        r = requests.get(
+            f"{FTL_URL}/api/auth",
+            headers={"X-FTL-SID": sid},
+            timeout=5,
+        )
+        assert r.status_code == 401, \
+            f"Expected 401 after logout, got {r.status_code}"
+
+    # -- 07c: delete session by ID --
+
+    def test_07c_delete_session_by_id(self):
+        """DELETE /api/auth/session/{id} removes a specific session."""
+        # Login to get a session
+        r = requests.post(
+            f"{FTL_URL}/api/auth",
+            json={"password": "ABC"},
+            timeout=5,
+        )
+        assert r.status_code == 200
+        sid = r.json()["session"]["sid"]
+
+        # List sessions to find the ID
+        r = requests.get(
+            f"{FTL_URL}/api/auth/sessions",
+            headers={"X-FTL-SID": sid},
+            timeout=5,
+        )
+        assert r.status_code == 200
+        sessions = r.json()["sessions"]
+        # Find our current session
+        current = next(
+            (s for s in sessions if s.get("current_session")), None)
+        assert current is not None, \
+            f"No current session found in {sessions}"
+        session_id = current["id"]
+
+        # Delete by ID
+        r = requests.delete(
+            f"{FTL_URL}/api/auth/session/{session_id}",
+            headers={"X-FTL-SID": sid},
+            timeout=5,
+        )
+        assert r.status_code == 204, \
+            f"Expected 204, got {r.status_code} {r.text}"
 
     # -- 08: rate limiting enforced --
 
