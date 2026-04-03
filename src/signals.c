@@ -147,17 +147,18 @@ static void find_mapping_name(const void *addr, char *buf, const size_t buflen)
 // Log one backtrace frame as a single line.
 // Resolved:   "  #N  func_name                    src/file.c:line"
 // Unresolved: "  #N  0xADDRESS  (reason)"
-static void log_frame(const int idx, const void *addr, const void *rel_addr)
+// Returns true if addr2line resolved the frame, false otherwise.
+static bool log_frame(const int idx, const void *addr, const void *rel_addr)
 {
 	if(!config.misc.addr2line.v.b)
 	{
 		log_info("  #%-2i  %p  (addr2line disabled via config)", idx, addr);
-		return;
+		return false;
 	}
 	if(bin_path[0] == '\0')
 	{
 		log_info("  #%-2i  %p  (binary path unknown)", idx, addr);
-		return;
+		return false;
 	}
 
 	char cmd[512];
@@ -167,7 +168,7 @@ static void log_frame(const int idx, const void *addr, const void *rel_addr)
 	if(fp == NULL)
 	{
 		log_info("  #%-2i  %p  (addr2line not available)", idx, addr);
-		return;
+		return false;
 	}
 
 	char func[256] = { 0 }, loc[256] = { 0 };
@@ -183,7 +184,7 @@ static void log_frame(const int idx, const void *addr, const void *rel_addr)
 	}
 	pclose(fp);
 
-	if(strcmp(func, "??") == 0)
+	if(func[0] == '\0' || strcmp(func, "??") == 0)
 	{
 		// addr2line found nothing — the frame is in a shared library or a
 		// stripped section.  Try dladdr() which reads .dynsym, the dynamic
@@ -209,7 +210,7 @@ static void log_frame(const int idx, const void *addr, const void *rel_addr)
 			else
 				log_info("  #%-2i  %p  (no debug info)", idx, addr);
 		}
-		return;
+		return false;
 	}
 
 	// Strip the compile-time source root to show project-relative paths
@@ -221,6 +222,7 @@ static void log_frame(const int idx, const void *addr, const void *rel_addr)
 #endif
 
 	log_info("  #%-2i  %-30s  %s", idx, func, display_loc);
+	return true;
 }
 #endif // USE_UNWIND
 
@@ -259,10 +261,26 @@ void generate_backtrace(void)
 	_Unwind_Backtrace(unwind_callback, &state);
 
 	log_info("Backtrace (%d frames):", state.count);
+	bool all_resolved = true;
 	for(int i = 0; i < state.count; i++)
 	{
 		void *rel = (void *)((uintptr_t)frames[i] - exe_load_addr);
-		log_frame(i, frames[i], rel);
+		if(!log_frame(i, frames[i], rel))
+			all_resolved = false;
+	}
+
+	// If any frame could not be resolved via addr2line (e.g. because
+	// addr2line is not installed), print the commands the user can run
+	// manually after installing binutils/addr2line.
+	if(!all_resolved && bin_path[0] != '\0')
+	{
+		log_info("One or more frames could not be resolved. Install addr2line");
+		log_info("(e.g. \"apt install binutils\" or \"apk add binutils\") and run:");
+		for(int i = 0; i < state.count; i++)
+		{
+			void *rel = (void *)((uintptr_t)frames[i] - exe_load_addr);
+			log_info("  addr2line -f -e %s %p", bin_path, rel);
+		}
 	}
 #else
 	log_info("!!! INFO: pihole-FTL has not been compiled with unwinding support, cannot generate backtrace !!!");
