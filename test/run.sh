@@ -103,9 +103,6 @@ echo "FTL verbose version (CLI): "
 echo -n "Contained dnsmasq version (DNS): "
 dig TXT CHAOS version.bind @127.0.0.1 +short
 
-# Install Python test dependencies
-apk add --no-cache py3-dnspython py3-requests py3-pytest py3-yaml
-
 # Pre-warm DNSSEC root key cache. dnsmasq's DNSSEC validation can
 # trigger internal DNSKEY queries for the root zone at unpredictable
 # times. By explicitly querying DNSKEY for "." first, we force the
