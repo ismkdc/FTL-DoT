@@ -59,6 +59,8 @@ void init_FTL_log(const char *name)
 			syslog(LOG_ERR, "Opening of FTL\'s log file failed, using syslog instead!");
 			ftl_log_available = false;
 		}
+		else
+			ftl_log_available = true;
 
 		// Close log file
 		if(logfile != NULL)
