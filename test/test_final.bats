@@ -36,13 +36,14 @@
   # pytest: 2x pihole.toml writes (dns/hosts config array PUT + DELETE)
   # pytest: 2x pihole.toml writes (dns/blocking disable + enable)
   # pytest: 4x pihole.toml writes (config PATCH round-trips: bool + int, change + restore each)
+  # pytest: 2x pihole.toml writes (auth stress test password set + remove)
   run bash -c 'grep -c "INFO: Config file written to /etc/pihole/pihole.toml" /var/log/pihole/FTL.log'
   printf "pihole.toml write count: %s\n" "${lines[0]}"
   # On RISCV64, pytest is skipped (too slow), so only BATS writes occur
   if [[ "${CI_ARCH}" == "linux/riscv64" ]]; then
     [[ ${lines[0]} == "1" ]]
   else
-    [[ ${lines[0]} == "14" ]]
+    [[ ${lines[0]} == "16" ]]
   fi
   # CLI password set/remove trigger inotify reload but result in
   # "pihole.toml unchanged" as the in-memory config already matches
