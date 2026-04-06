@@ -498,6 +498,20 @@ static int api_list_write(struct ftl_conn *api,
 		cJSON_AddItemToArray(okay ? success : errors, details);
 	}
 
+	// If all items failed, return a database error instead of
+	// a success response with an empty result set
+	if(cJSON_GetArraySize(success) == 0 && cJSON_GetArraySize(errors) > 0)
+	{
+		const int ret = send_json_error(api, 400, // 400 Bad Request
+		                       "database_error",
+		                       "Could not add to gravity database",
+		                       sql_msg);
+		cJSON_Delete(processed);
+		if(allocated_json)
+			cJSON_Delete(row.items);
+		return ret;
+	}
+
 	// Inform the resolver that it needs to reload gravity
 	set_event(RELOAD_GRAVITY);
 
