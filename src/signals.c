@@ -38,6 +38,11 @@ static volatile pid_t mpid = 0;
 static time_t FTLstarttime = 0;
 volatile int exit_code = EXIT_SUCCESS;
 
+// Store the SIGTERM source for re-logging during cleanup so the termination
+// reason is always visible near the final "FTL terminated" message, even if
+// earlier log lines have been lost (see #2818)
+static char term_source[256] = { 0 };
+
 // Binary path stored by init_backtrace() — signal-handler-safe static buffer,
 // never reallocated, safe to read from any context including signal handlers
 #if defined(USE_UNWIND)
@@ -576,8 +581,11 @@ static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 		strcpy(kill_user, "N/A");
 	}
 
-	// Log who sent the signal
+	// Log who sent the signal and store for re-logging during cleanup (#2818)
 	log_info("Asked to terminate by \"%s\" (PID %ld, user %s UID %ld)",
+	         kill_name, (long int)kill_pid, kill_user, (long int)kill_uid);
+	snprintf(term_source, sizeof(term_source),
+	         "\"%s\" (PID %ld, user %s UID %ld)",
 	         kill_name, (long int)kill_pid, kill_user, (long int)kill_uid);
 
 	// Check if we can terminate
@@ -686,6 +694,19 @@ pid_t main_pid(void)
 		// Has not been set so far
 		return getpid();
 }
+
+// Deliberately NOT marked __attribute__((pure)): the buffer this reads is
+// written from SIGTERM_handler, which GCC's pure analysis cannot see, so a
+// pure annotation would let the compiler cache/hoist the result across an
+// asynchronous signal-handler update. Suppress the corresponding warning
+// for just this function (see #2839).
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsuggest-attribute=pure"
+const char *get_term_source(void)
+{
+	return term_source[0] != '\0' ? term_source : NULL;
+}
+#pragma GCC diagnostic pop
 
 void thread_sleepms(const enum thread_types thread, const int milliseconds)
 {
