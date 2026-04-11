@@ -2,9 +2,11 @@
 
 echo "************ Installing PowerDNS configuration ************"
 
-# Delete possibly existing zone database
+# Delete possibly existing zone database. Include the WAL/SHM siblings —
+# leaving them behind lets SQLite replay stale transactions against the
+# freshly created database on the next open.
 mkdir -p /var/lib/powerdns/
-rm /var/lib/powerdns/pdns.sqlite3 2> /dev/null
+rm -f /var/lib/powerdns/pdns.sqlite3*
 
 # Install config files
 if [ -d /etc/powerdns ]; then
@@ -175,10 +177,34 @@ pdnsutil zone list-all
 
 echo "********* Done installing PowerDNS configuration **********"
 
-# Start services
-killall pdns_server
-pdns_server --daemon
-# Have to create the socketdir or the recursor will fails to start
+# Stop any previously running powerDNS daemons. killall is asynchronous,
+# so wait until each process is actually gone before starting the new
+# instance — otherwise the new daemon can fail to bind its port silently.
+for proc in pdns_server pdns_recursor; do
+  killall "$proc" 2> /dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pidof "$proc" > /dev/null 2>&1 || break
+    sleep 0.2
+  done
+  killall -9 "$proc" 2> /dev/null || true
+done
+
+# Have to create the socketdir or the recursor will fail to start. Also
+# clean stale pid/control-socket files left behind by a previous run.
 mkdir -p /var/run/pdns-recursor
-killall pdns_recursor
+rm -f /var/run/pdns-recursor/*
+
+# Start authoritative pdns_server and wait for it to accept queries on
+# its configured port (5554) before continuing.
+pdns_server --daemon
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  dig @127.0.0.1 -p 5554 ftl. SOA +tries=1 +time=1 +short > /dev/null 2>&1 && break
+  sleep 0.5
+done
+
+# Start pdns_recursor and wait for it to accept queries on port 5555.
 pdns_recursor --daemon
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  dig @127.0.0.1 -p 5555 ftl. SOA +tries=1 +time=1 +short > /dev/null 2>&1 && break
+  sleep 0.5
+done
