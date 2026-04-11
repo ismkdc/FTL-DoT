@@ -357,6 +357,34 @@ class TestPutDomains:
         # Clean up
         api_session.delete(url, timeout=10)
 
+    def test_put_punycode_domain(self, api_session):
+        """Punycode domains with IDNA2008-disallowed chars must be accepted.
+
+        Regression test for https://github.com/pi-hole/FTL/issues/2837
+        xn--4ca0bs45142c.com encodes äöü😀.com — the emoji makes libidn2 reject
+        it under IDNA2008 even though the ASCII punycode form is a perfectly
+        valid DNS name.
+        """
+        domain = "xn--4ca0bs45142c.com"
+        url = f"{FTL_URL}/api/domains/deny/exact/{domain}"
+
+        r = api_session.put(url,
+                            json={"comment": "pytest punycode", "groups": [0],
+                                  "enabled": True},
+                            timeout=10)
+        assert r.status_code in (200, 201), \
+            f"PUT punycode domain failed: {r.status_code} {r.text}"
+        data = _j(r)
+        domains = data["domains"]
+        assert len(domains) == 1
+        assert domains[0]["domain"] == domain
+        assert domains[0]["type"] == "deny"
+        assert domains[0]["kind"] == "exact"
+
+        # Clean up
+        r = api_session.delete(url, timeout=10)
+        assert r.status_code == 204
+
 
 # ---------------------------------------------------------------------------
 # PUT clients

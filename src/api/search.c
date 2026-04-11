@@ -175,7 +175,7 @@ int api_search(struct ftl_conn *api)
 		}
 	}
 
-	// Convert domain to punycode
+	// Convert domain to punycode if it contains non-ASCII characters
 	// The IDNA document defines internationalized domain names (IDNs) and a
 	// mechanism called IDNA for handling them in a standard fashion. IDNs
 	// use characters drawn from a large repertoire (Unicode), but IDNA
@@ -187,20 +187,48 @@ int api_search(struct ftl_conn *api)
 	// Used flags:
 	// - IDN2_NFC_INPUT: Input is in Unicode Normalization Form C (NFC)
 	// - IDN2_NONTRANSITIONAL: Use Unicode TR46 non-transitional processing
+	//
+	// Skip IDN conversion for domains that are already pure ASCII (e.g.,
+	// punycode domains like xn--gi8h42h.ws) as libidn2 may reject valid
+	// punycode that represents characters not allowed by IDNA2008
 	char *punycode = NULL;
-	const int rc = idn2_to_ascii_lz(domain, &punycode, IDN2_NFC_INPUT | IDN2_NONTRANSITIONAL);
-	if (rc != IDN2_OK)
+	bool needs_idn = false;
+	for(const char *p = domain; *p != '\0'; p++)
 	{
-		// Invalid domain name
-		return send_json_error(api, 400,
-		                       "bad_request",
-		                       "Invalid request: Invalid domain name",
-		                       idn2_strerror(rc));
+		// 0x7F is the last ASCII character, so anything above that is
+		// non-ASCII and needs IDN conversion
+		if((unsigned char)*p > 0x7F)
+		{
+			needs_idn = true;
+			break;
+		}
+	}
+	if(needs_idn)
+	{
+		const int rc = idn2_to_ascii_lz(domain, &punycode, IDN2_NFC_INPUT | IDN2_NONTRANSITIONAL);
+		if (rc != IDN2_OK)
+		{
+			// Invalid domain name
+			return send_json_error(api, 400,
+			                       "bad_request",
+			                       "Invalid request: Invalid domain name",
+			                       idn2_strerror(rc));
+		}
+	}
+	else
+	{
+		// Domain is already ASCII, duplicate it for uniform handling
+		punycode = strdup(domain);
+		if(punycode == NULL)
+			return send_json_error(api, 500,
+			                       "internal_error",
+			                       "Memory allocation failed",
+			                       NULL);
 	}
 
-	// Convert punycode domain to lowercase
+	// Convert domain to lowercase
 	for(unsigned int i = 0u; i < strlen(punycode); i++)
-		punycode[i] = tolower(punycode[i]);
+		punycode[i] = tolower((unsigned char)punycode[i]);
 
 	// Search through all exact domains
 	cJSON *domains = JSON_NEW_ARRAY();

@@ -237,6 +237,21 @@ class TestDomainSearch:
             json.dumps(data, indent=2)
         assert data["search"]["results"]["total"] == 0
 
+    def test_punycode_domain_accepted(self, api_session):
+        """Punycode domains (e.g. emoji IDNs) must not be rejected by the API.
+
+        Regression test for https://github.com/pi-hole/FTL/issues/2837
+        libidn2 rejects punycode for characters not in IDNA2008 (e.g. emoji),
+        but the ASCII punycode form is a perfectly valid DNS name.
+        xn--4ca0bs45142c.com is the punycode encoding of äöü😀.com.
+        """
+        data = _j(api_session.get(f"{FTL_URL}/api/search/xn--4ca0bs45142c.com",
+                                  params={"debug": "true"}, timeout=5))
+        assert data["search"]["debug"]["punycode"] == "xn--4ca0bs45142c.com", \
+            json.dumps(data, indent=2)
+        # The domain does not exist in gravity, so total should be 0
+        assert data["search"]["results"]["total"] == 0
+
     def test_partial_matching(self, api_session):
         """Partial matching returns substring hits in gravity."""
         data = _j(api_session.get(f"{FTL_URL}/api/search/gravity",
