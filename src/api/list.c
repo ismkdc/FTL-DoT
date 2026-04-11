@@ -479,7 +479,6 @@ static int api_list_write(struct ftl_conn *api,
 				// which convert to xn--{{{-pla4gpb.com
 				if(!valid_domain(it->valuestring, strlen(it->valuestring), false))
 				{
-					free(punycode);
 					if(allocated_json)
 						cJSON_Delete(row.items);
 					return send_json_error(api, 400, // 400 Bad Request
