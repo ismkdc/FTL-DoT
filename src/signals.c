@@ -242,7 +242,10 @@ const char * const thread_names[THREADS_MAX] = {
 	"ntp-server4",
 	"ntp-server6",
 	"webserver",
- };
+};
+
+// Private prototypes
+static void terminate(void);
 
 // Return the (null-terminated) name of the calling thread
 // The name is stored in the buffer as well as returned for convenience
@@ -526,12 +529,12 @@ static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 	term_sender_pid = si->si_pid;
 	term_sender_uid = si->si_uid;
 
-	// Terminate dnsmasq to stop DNS service.
-	// raise() is async-signal-safe per POSIX.
-	if(!dnsmasq_failed)
-		raise(SIGUSR6);
-	else
-		killed = true;
+	// Request deferred termination. The actual raise(SIGUSR6)/killed
+	// assignment happens in terminate(), called from check_if_want_terminate()
+	// which is invoked periodically from the main loop (gc.c) — keeping
+	// the signal handler free of non-async-signal-safe calls like
+	// log_info(), time(), and gravity_running checks.
+	want_terminate = true;
 }
 
 // Log details about who sent the SIGTERM. Called from the main shutdown
@@ -589,6 +592,47 @@ void log_sigterm_info(void)
 
 	log_info("Asked to terminate by \"%s\" (PID %ld, user %s UID %ld)",
 	         kill_name, (long int)kill_pid, kill_user, (long int)kill_uid);
+}
+
+// Checks if the program should terminate or not. Called periodically from
+// the main loop (gc.c) and API action handlers — never from signal context.
+static time_t last_term_warning = 0;
+void check_if_want_terminate(void)
+{
+	if(!want_terminate)
+		// We are not asked to terminate
+		return;
+
+	// Return early if we are not allowed to terminate
+	if(gravity_running)
+	{
+		// Only log once every 30 seconds or if any debugging is enabled
+		if(time(NULL) - last_term_warning > 30 || debug_flags[DEBUG_ANY])
+		{
+			log_info("Not terminating as gravity is still running...");
+			last_term_warning = time(NULL);
+		}
+		return;
+	}
+
+	// Terminate if gravity is not running
+	terminate();
+}
+
+// Terminates the DNS service by signaling or marking it as failed
+static void terminate(void)
+{
+	// Terminate dnsmasq to stop DNS service
+	if(!dnsmasq_failed)
+	{
+		log_debug(DEBUG_ANY, "Sending SIGUSR6 to dnsmasq to stop DNS service");
+		raise(SIGUSR6);
+	}
+	else
+	{
+		log_debug(DEBUG_ANY, "Embedded dnsmasq failed, exiting on request");
+		killed = true;
+	}
 }
 
 // Register ordinary signals handler

@@ -228,12 +228,21 @@ static int api_teleporter_POST(struct ftl_conn *api)
 {
 	// Check if this is an app session and reject the request if app sudo
 	// mode is disabled
-	if(api->session != NULL && api->session->app && !config.webserver.api.app_sudo.v.b)
+	if(api->session.used && api->session.app && !config.webserver.api.app_sudo.v.b)
 	{
 		return send_json_error(api, 403,
 		                       "forbidden",
 		                       "Unable to change configuration (read-only)",
 		                       "The current app session is not allowed to modify Pi-hole config settings (webserver.api.app_sudo is false)");
+	}
+
+	// Check if this is a CLI session and reject the request
+	if(api->session.used && api->session.cli)
+	{
+		return send_json_error(api, 403,
+		                       "forbidden",
+		                       "Unable to change configuration (read-only)",
+		                       "The current CLI session is not allowed to modify Pi-hole config settings");
 	}
 
 	struct upload_data data;
