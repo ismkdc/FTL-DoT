@@ -93,3 +93,26 @@
   printf "%s\n" "${lines[@]}"
   [[ $status == 0 ]]
 }
+
+@test "Shutdown reason logged at INFO level (#2818)" {
+  # Verify the shutdown path now logs at INFO level instead of DEBUG-only
+  run bash -c 'grep "INFO: Shutting down (exit code" /var/log/pihole/FTL.log'
+  printf "%s\n" "${lines[@]}"
+  [[ $status == 0 ]]
+}
+
+@test "SIGTERM source re-logged near final termination message (#2818)" {
+  # Verify the SIGTERM sender is re-logged during cleanup so it appears
+  # near the "FTL terminated" message even in truncated logs
+  run bash -c 'grep "INFO: Terminated by" /var/log/pihole/FTL.log'
+  printf "%s\n" "${lines[@]}"
+  [[ $status == 0 ]]
+
+  # Verify ordering: "Terminated by" must appear AFTER "Shutting down" and
+  # BEFORE the final "FTL terminated" message
+  run bash -c 'grep -n "Shutting down (exit code\|Terminated by\|FTL terminated after" /var/log/pihole/FTL.log | tail -3'
+  printf "ordering: %s\n" "${lines[@]}"
+  [[ "${lines[0]}" == *"Shutting down (exit code"* ]]
+  [[ "${lines[1]}" == *"Terminated by"* ]]
+  [[ "${lines[2]}" == *"FTL terminated after"* ]]
+}

@@ -464,6 +464,11 @@ void cleanup(const int ret)
 
 	char buffer[42] = { 0 };
 	format_time(buffer, 0, timer_elapsed_msec(EXIT_TIMER));
+	// Re-log the termination source near the final message so it is visible
+	// even when earlier log lines have been lost or rotated (#2818)
+	const char *source = get_term_source();
+	if(source != NULL)
+		log_info("Terminated by %s", source);
 	if(ret == RESTART_FTL_CODE)
 		log_info("########## FTL terminated after%s (internal restart)! ##########", buffer);
 	else
