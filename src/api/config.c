@@ -111,7 +111,7 @@ cJSON *addJSONConfValue(const enum conf_type conf_type, union conf_value *val)
 			return cJSON_CreateNumber(val->d);
 		case CONF_STRING:
 		case CONF_STRING_ALLOCATED:
-			return val->s ? cJSON_CreateStringReference(val->s) : cJSON_CreateNull();
+			return val->s ? cJSON_CreateString(val->s) : cJSON_CreateNull();
 		case CONF_ENUM_PTR_TYPE:
 			return cJSON_CreateStringReference(get_ptr_type_str(val->ptr_type));
 		case CONF_ENUM_BUSY_TYPE:
