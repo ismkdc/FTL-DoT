@@ -11,7 +11,6 @@ Usage:
 
 import json
 
-import dns.resolver
 import pytest
 
 FTL_URL = "http://127.0.0.1"
@@ -24,32 +23,16 @@ FTL_URL = "http://127.0.0.1"
 # forwards the query upstream.  The CNAME chain crosses icloud.com and
 # apple-dns.net.  When both zones carry DS records (DNSSEC-signed), dnsmasq
 # fires two extra DNSKEY validation queries, shifting several counters by +2.
-# Detect the current state once per session so the assertions below match
-# whichever configuration the upstream zones happen to be in.
 #
-# The check queries the local pdns_recursor on port 5555 directly (not through
-# FTL) to avoid polluting FTL's query counters.
+# These constants are populated by the session-scoped detect_upstream_dnssec
+# fixture in conftest.py (which waits for pdns_recursor to be available and
+# probes DS records with retry/backoff).  The values below are safe defaults
+# for the non-DNSSEC case and are overwritten before any test runs.
 
-def _has_ds_record(domain):
-    """Return True if *domain* currently has a DS record."""
-    try:
-        resolver = dns.resolver.Resolver(configure=False)
-        resolver.nameservers = ["127.0.0.1"]
-        resolver.port = 5555
-        resolver.lifetime = 10
-        resolver.resolve(domain, "DS")
-        return True
-    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN,
-            dns.resolver.NoNameservers, dns.exception.Timeout):
-        return False
-
-UPSTREAM_DNSSEC = _has_ds_record("icloud.com") and _has_ds_record("apple-dns.net")
-
-# Counters that shift when upstream DNSSEC is active
-TOTAL       = 137 if UPSTREAM_DNSSEC else 135
-FORWARDED   = 47  if UPSTREAM_DNSSEC else 45
-DNSKEY      = 9   if UPSTREAM_DNSSEC else 7
-TOP_DOMAIN  = "." if UPSTREAM_DNSSEC else "localhost"
+TOTAL       = 135
+FORWARDED   = 45
+DNSKEY      = 7
+TOP_DOMAIN  = "localhost"
 
 
 # ---------------------------------------------------------------------------
