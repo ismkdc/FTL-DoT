@@ -30,7 +30,8 @@ static int api_list_read(struct ftl_conn *api,
                          cJSON *processed)
 {
 	const char *sql_msg = NULL;
-	if(!gravityDB_readTable(listtype, item, &sql_msg, true, NULL))
+	sqlite3_stmt *stmt = NULL;
+	if(!gravityDB_readTable(listtype, item, &sql_msg, true, NULL, &stmt))
 	{
 		return send_json_error(api, 400, // 400 Bad Request
 		                       "database_error",
@@ -40,7 +41,7 @@ static int api_list_read(struct ftl_conn *api,
 
 	tablerow table = { 0 };
 	cJSON *rows = JSON_NEW_ARRAY();
-	while(gravityDB_readTableGetRow(listtype, &table, &sql_msg))
+	while(gravityDB_readTableGetRow(listtype, &table, &sql_msg, stmt))
 	{
 		cJSON *row = JSON_NEW_OBJECT();
 
@@ -98,7 +99,7 @@ static int api_list_read(struct ftl_conn *api,
 				if(ret != 0)
 				{
 					JSON_DELETE(rows);
-					gravityDB_readTableFinalize();
+					gravityDB_readTableFinalize(stmt);
 					return ret;
 				}
 
@@ -135,7 +136,7 @@ static int api_list_read(struct ftl_conn *api,
 
 		JSON_ADD_ITEM_TO_ARRAY(rows, row);
 	}
-	gravityDB_readTableFinalize();
+	gravityDB_readTableFinalize(stmt);
 
 	if(sql_msg == NULL)
 	{
