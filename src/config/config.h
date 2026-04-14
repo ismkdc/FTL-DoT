@@ -297,7 +297,6 @@ struct config {
 	} webserver;
 
 	struct {
-		struct conf_item pid;
 		struct conf_item database;
 		struct conf_item tmp_db;
 		struct conf_item gravity;
