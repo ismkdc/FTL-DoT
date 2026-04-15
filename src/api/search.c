@@ -38,7 +38,8 @@ static int search_table(struct ftl_conn *api, const char *item,
 
 	// Check domain against lists table
 	const char *sql_msg = NULL;
-	if(!gravityDB_readTable(listtype, item, &sql_msg, !partial, ids))
+	sqlite3_stmt *stmt = NULL;
+	if(!gravityDB_readTable(listtype, item, &sql_msg, !partial, ids, &stmt))
 	{
 		return send_json_error(api, 400, // 400 Bad Request
 		                       "database_error",
@@ -47,7 +48,7 @@ static int search_table(struct ftl_conn *api, const char *item,
 	}
 
 	tablerow table;
-	while(gravityDB_readTableGetRow(listtype, &table, &sql_msg))
+	while(gravityDB_readTableGetRow(listtype, &table, &sql_msg, stmt))
 	{
 		if(++(*N) > limit)
 			continue;
@@ -83,7 +84,7 @@ static int search_table(struct ftl_conn *api, const char *item,
 			const int ret = parse_groupIDs(api, &table, row);
 			if(ret != 0)
 			{
-				gravityDB_readTableFinalize();
+				gravityDB_readTableFinalize(stmt);
 				return ret;
 			}
 		}
@@ -95,7 +96,7 @@ static int search_table(struct ftl_conn *api, const char *item,
 		}
 		JSON_ADD_ITEM_TO_ARRAY(json, row);
 	}
-	gravityDB_readTableFinalize();
+	gravityDB_readTableFinalize(stmt);
 
 	return 200;
 }
