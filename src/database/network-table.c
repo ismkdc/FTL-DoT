@@ -1782,7 +1782,8 @@ static bool getMACVendor(const char *hwaddr, char vendor[MAXVENDORLEN])
 
 	bool success = false;
 	sqlite3 *macvendor_db = NULL;
-	int rc = sqlite3_open_v2(config.files.macvendor.v.s, &macvendor_db, SQLITE_OPEN_READONLY, NULL);
+	int rc = sqlite3_open_v2(config.files.macvendor.v.s, &macvendor_db,
+	                         SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	if(rc != SQLITE_OK)
 	{
 		log_err("getMACVendor(\"%s\") - SQL error: %s", hwaddr, sqlite3_errstr(rc));

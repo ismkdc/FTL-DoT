@@ -69,7 +69,8 @@ static bool create_teleporter_database(const char *filename, const char **tables
 {
 	// Open in-memory sqlite3 database
 	sqlite3 *db;
-	if(sqlite3_open_v2(":memory:", &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
+	if(sqlite3_open_v2(":memory:", &db,
+	                   SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK)
 	{
 		log_warn("Failed to open in-memory database: %s", sqlite3_errmsg(db));
 		return false;
@@ -394,7 +395,8 @@ static const char *test_and_import_database(void *ptr, size_t size, const char *
 	// We do this by trying to deserialize the file into a SQLite3 database
 	// object. If this fails, the file is not a valid SQlite3 database.
 	sqlite3 *database = NULL;
-	if(sqlite3_open_v2(":memory:", &database, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
+	if(sqlite3_open_v2(":memory:", &database,
+	                   SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK)
 	{
 		strncpy(hint, sqlite3_errmsg(database), ERRBUF_SIZE);
 		sqlite3_close(database);

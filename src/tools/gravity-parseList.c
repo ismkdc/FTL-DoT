@@ -191,7 +191,8 @@ int gravity_parseList(const char *infile, const char *outfile, const char *adlis
 	// Open output file (database)
 	sqlite3 *db = NULL;
 	sqlite3_stmt *stmt = NULL;
-	if(!checkOnly && sqlite3_open_v2(outfile, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
+	if(!checkOnly && sqlite3_open_v2(outfile, &db,
+	                                 SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK)
 	{
 		printf("%s  %s Unable to open database file %s for writing\n", over, cross, outfile);
 		fclose(fpin);

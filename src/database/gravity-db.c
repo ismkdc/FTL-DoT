@@ -2955,7 +2955,8 @@ bool gravity_updated(void)
 	}
 
 	// Open database
-	int rc = sqlite3_open_v2(config.files.gravity.v.s, &db, SQLITE_OPEN_READONLY, NULL);
+	int rc = sqlite3_open_v2(config.files.gravity.v.s, &db,
+	                         SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	if(db == NULL || rc != SQLITE_OK)
 	{
 		log_err("gravity_updated(): %s - SQL error open: %s", config.files.gravity.v.s, sqlite3_errstr(rc));

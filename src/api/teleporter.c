@@ -480,7 +480,8 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 
 	// Open database connection
 	sqlite3 *db = NULL;
-	if(sqlite3_open_v2(config.files.gravity.v.s, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
+	if(sqlite3_open_v2(config.files.gravity.v.s, &db,
+	                   SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK)
 	{
 		log_err("import_json_table(%s): Unable to open database file \"%s\": %s",
 		        file->filename, config.files.database.v.s, sqlite3_errmsg(db));
