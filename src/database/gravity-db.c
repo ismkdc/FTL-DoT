@@ -72,6 +72,14 @@ static bool gravity_has_exact_denylist = false;
 // Bind a client's group_id carray to a statement, skipping the bind when
 // the same array is already bound (common case: consecutive queries from
 // the same client). Returns the group_ids pointer, or NULL on error.
+//
+// Lifetime contract: group_ids points into the SHM integer-array region
+// managed by getintarray(). That region is stable for the lifetime of
+// the statement step, so SQLITE_STATIC is correct. If getintarray() is
+// ever changed to return heap-allocated or short-lived storage, this
+// MUST switch to SQLITE_TRANSIENT (or the caller must explicitly
+// re-bind before each step). The assert() below is a cheap guard
+// against a future refactor returning a NULL-but-non-empty array.
 static inline const int32_t *bind_client_groups(sqlite3_stmt *stmt,
                                                 size_t groupspos,
                                                 size_t *last_bound)
@@ -83,6 +91,7 @@ static inline const int32_t *bind_client_groups(sqlite3_stmt *stmt,
 
 	if(groupspos != *last_bound)
 	{
+		assert(group_ids != NULL);
 		sqlite3_carray_bind(stmt, 2, (void*)group_ids, group_count,
 		                    SQLITE_CARRAY_INT32, SQLITE_STATIC);
 		*last_bound = groupspos;
