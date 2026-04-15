@@ -330,6 +330,9 @@ static bool gravityDB_open(void)
 	// page cache via a virtual address mapping — one copy, shared. Process
 	// RSS (virtual) increases, but physical RAM usage stays the same or
 	// decreases.
+	// Note: the in-process page cache size is already raised globally via
+	// -DSQLITE_DEFAULT_CACHE_SIZE=16384 in src/CMakeLists.txt, so we do
+	// NOT issue a separate PRAGMA cache_size here.
 	log_debug(DEBUG_DATABASE, "gravityDB_open(): Enabling memory-mapped I/O (mmap_size = 256 MiB)");
 	rc = sqlite3_exec(gravity_db, "PRAGMA mmap_size = 268435456", NULL, NULL, &zErrMsg);
 	if( rc != SQLITE_OK )
