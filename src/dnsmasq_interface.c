@@ -109,16 +109,29 @@ static uint64_t ftl_cache_misses = 0;
 #define PERF_STAT_NEW_QUERY      0  // Total FTL_new_query() under SHM lock
 #define PERF_STAT_FIND_CLIENT    1  // findClientID() hash lookup
 #define PERF_STAT_FIND_DOMAIN    2  // findDomainID() hash lookup
-#define PERF_STAT_CHECK_BLOCKING 3  // FTL_check_blocking() total
+#define PERF_STAT_CHECK_BLOCKING 3  // FTL_check_blocking() from FTL_new_query (primary path)
 #define PERF_STAT_REPLY          4  // FTL_reply() under SHM lock
 // The two sub-slots below only fire on the cache-miss path inside
 // check_blocking (i.e. a domain/client combination that FTL has not
 // yet classified). They let the 5-minute rollup localize rare
 // multi-millisecond outliers to either the allowlist or the
-// denylist/gravity stage without per-call log spam.
+// denylist/gravity stage without per-call log spam. They fire for
+// BOTH the primary and the CNAME-side callers of FTL_check_blocking,
+// so their call counts cover the full workload while the two parent
+// slots above/below split primary vs CNAME amplification.
 #define PERF_STAT_CB_ALLOWLIST   5  // in_allowlist() + in_regex(ALLOW)
 #define PERF_STAT_CB_DENYLIST    6  // check_domain_blocked() (primary + _esni fallback)
-#define PERF_STAT_COUNT          7
+#define PERF_STAT_CB_CNAME       7  // FTL_check_blocking() from FTL_CNAME (per-hop)
+// The three sub-slots below nest inside CB_DENYLIST and break
+// check_domain_blocked() into its three disjoint engines. Each one
+// has a different fix domain if it turns out to own the tail:
+//   CDB_EXACT   — small SQLite prepared-statement path
+//   CDB_GRAVITY — large gravity/antigravity SQLite probe under mmap
+//   CDB_REGEX   — TRE regex engine, per-client
+#define PERF_STAT_CDB_EXACT      8  // in_denylist() exact-match
+#define PERF_STAT_CDB_GRAVITY    9  // in_gravity() antigravity + gravity
+#define PERF_STAT_CDB_REGEX      10 // in_regex(REGEX_DENY)
+#define PERF_STAT_COUNT          11
 
 static struct {
 	uint64_t calls;    // number of invocations
@@ -188,10 +201,14 @@ void FTL_dump_cache_stats(void)
 		"new_query (total under lock)",
 		"findClientID",
 		"findDomainID",
-		"check_blocking",
+		"check_blocking (primary path)",
 		"reply (total under lock)",
 		"check_blocking -> allowlist (miss path)",
 		"check_blocking -> denylist/gravity (miss path)",
+		"check_blocking (CNAME path, per-hop)",
+		"check_domain_blocked -> exact denylist",
+		"check_domain_blocked -> gravity+antigravity",
+		"check_domain_blocked -> regex denylist",
 	};
 	for(unsigned int i = 0; i < PERF_STAT_COUNT; i++)
 	{
@@ -1440,7 +1457,9 @@ static bool check_domain_blocked(const char *domain,
 		return false;
 
 	// Check domains against exact blacklist
+	PERF_START(_pcdb_exact);
 	const enum db_result blacklist = in_denylist(domain, dns_cache, client);
+	PERF_END(_pcdb_exact, PERF_STAT_CDB_EXACT);
 	if(blacklist == FOUND)
 	{
 		// Set new status
@@ -1456,9 +1475,13 @@ static bool check_domain_blocked(const char *domain,
 	// avoids all heap allocations in this path.
 	struct abp_patterns abp = { .count = 0, .generated = false };
 
-	// Check domain against antigravity
+	// Check domain against antigravity. Timed into the same slot as the
+	// gravity call below so the rollup reflects total gravity-DB work
+	// per query regardless of whether the antigravity path hit or missed.
 	int list_id = -1;
+	PERF_START(_pcdb_antigrav);
 	const enum db_result antigravity = in_gravity(domain, &abp, client, true, &list_id);
+	PERF_END(_pcdb_antigrav, PERF_STAT_CDB_GRAVITY);
 	if(antigravity == FOUND)
 	{
 		log_debug(DEBUG_QUERIES, "Allowing query due to antigravity match (list ID %i)", list_id);
@@ -1480,7 +1503,9 @@ static bool check_domain_blocked(const char *domain,
 	}
 
 	// Check domains against gravity domains
+	PERF_START(_pcdb_grav);
 	const enum db_result gravity = in_gravity(domain, &abp, client, false, &list_id);
+	PERF_END(_pcdb_grav, PERF_STAT_CDB_GRAVITY);
 	if(gravity == FOUND)
 	{
 		// Set new status
@@ -1538,7 +1563,10 @@ static bool check_domain_blocked(const char *domain,
 
 	// Check domain against blacklist regex filters
 	// Skipped when the domain is whitelisted or blocked by exact blacklist or gravity
-	if(in_regex(domain, dns_cache, client->id, REGEX_DENY))
+	PERF_START(_pcdb_regex);
+	const bool regex_deny_hit = in_regex(domain, dns_cache, client->id, REGEX_DENY);
+	PERF_END(_pcdb_regex, PERF_STAT_CDB_REGEX);
+	if(regex_deny_hit)
 	{
 		// Set new status
 		*new_status = QUERY_REGEX;
@@ -2093,8 +2121,14 @@ bool FTL_CNAME(const char *dst, const char *src, const int id)
 		return false;
 	}
 
-	// Check per-client blocking for the child domain
+	// Check per-client blocking for the child domain. Timed into its own
+	// slot (not PERF_STAT_CHECK_BLOCKING) so the 5-minute rollup splits
+	// primary-query work from CNAME-hop work: one user-facing DNS query
+	// with a 5-hop CNAME chain drives 5 separate calls here, each capable
+	// of a full denylist/gravity lookup.
+	PERF_START(_pcbc);
 	const bool block = FTL_check_blocking(child_domain, query, client, child_domain_data, dns_cache);
+	PERF_END(_pcbc, PERF_STAT_CB_CNAME);
 
 	// If we find during a CNAME inspection that we want to block the entire chain,
 	// the originally queried domain itself was not counted as blocked. We have to
