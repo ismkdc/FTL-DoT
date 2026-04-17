@@ -44,6 +44,7 @@ typedef struct {
 bool gravityDB_reopen(void);
 void gravityDB_forked(void);
 void gravityDB_reload_groups(clientsData *client);
+void gravityDB_process_pending_reloads(void);
 bool gravityDB_prepare_client_statements(clientsData *client);
 void gravityDB_close(void);
 bool gravityDB_getTable(unsigned char list);

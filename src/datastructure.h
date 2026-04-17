@@ -103,6 +103,7 @@ typedef struct {
 		bool aliasclient:1;
 		bool rate_limited:1;
 		bool in_database:1;
+		bool reload_pending:1;
 	} flags;
 	int count;
 	int blockedcount;

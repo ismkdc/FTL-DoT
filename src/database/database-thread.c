@@ -224,6 +224,12 @@ void *DB_thread(void *val)
 				// Reload gravity
 				set_event(RELOAD_GRAVITY);
 			}
+
+			// Process any client group reloads deferred by the DNS
+			// thread. gravityDB_client_check_again() only schedules
+			// these now; picking them up here keeps the heavy
+			// re-prepare/regex-reload work off the DNS hot path.
+			gravityDB_process_pending_reloads();
 		}
 
 		// Intermediate cancellation-point

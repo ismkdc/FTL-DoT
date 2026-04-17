@@ -1357,7 +1357,19 @@ void gravityDB_reload_groups(clientsData *client)
 
 // Check if this client needs a rechecking of group membership
 // This client may be identified by something that wasn't there on its first
-// query (hostname, MAC address, interface)
+// query (hostname, MAC address, interface).
+//
+// The actual reload is *deferred* to the database thread rather than run inline
+// here. Production perf data showed that the inline call to
+// gravityDB_reload_groups() was the sole source of the ~1-2 ms tail in
+// cache-miss queries: each time a client's first-seen clock crossed a
+// 60/120/180-second boundary, the very next DNS query hitting in_gravity()
+// absorbed the cost of re-fetching groups and rebuilding per-client statements
+// and regex lookup — all under the SHM lock, on the hot path. Setting a pending
+// flag and letting the DB thread pick it up once per second pushes that work
+// off the DNS path; queries in the meantime use the previously-prepared
+// statements (already slightly stale by design between rechecks, so ≤1 s
+// additional staleness is immaterial).
 static void gravityDB_client_check_again(clientsData *client)
 {
 	// After NUM_RECHECKS the condition below is permanently false — skip
@@ -1370,12 +1382,33 @@ static void gravityDB_client_check_again(clientsData *client)
 	const unsigned char check_count = client->reread_groups + 1u;
 	if(check_count <= NUM_RECHECKS && diff > check_count * RECHECK_DELAY)
 	{
-		const char *ord = get_ordinal_suffix(check_count);
-		log_debug(DEBUG_CLIENTS, "Reloading client groups after %u seconds (%u%s check)",
-		          (unsigned int)diff, check_count, ord);
+		log_debug(DEBUG_CLIENTS, "Scheduling client group reload after %u seconds (%u%s check)",
+		          (unsigned int)diff, check_count, get_ordinal_suffix(check_count));
 		client->reread_groups++;
-		gravityDB_reload_groups(client);
+		// Defer the heavy reload to the DB thread; see header comment above.
+		client->flags.reload_pending = true;
 	}
+}
+
+// Process all clients that have a pending group reload. Called from the
+// database thread once per second. Runs under the SHM lock because
+// gravityDB_reload_groups() mutates per-client state (found_group flag,
+// regex lookup table) that the DNS thread also reads. Cost when no
+// client is flagged is a single lock round-trip plus an O(N_clients)
+// flag scan, both of which are negligible at typical deployment sizes.
+void gravityDB_process_pending_reloads(void)
+{
+	lock_shm();
+	for(unsigned int clientID = 0; clientID < counters->clients; clientID++)
+	{
+		clientsData *client = getClient(clientID, true);
+		if(client != NULL && client->flags.reload_pending)
+		{
+			gravityDB_reload_groups(client);
+			client->flags.reload_pending = false;
+		}
+	}
+	unlock_shm();
 }
 
 enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clientsData *client)
