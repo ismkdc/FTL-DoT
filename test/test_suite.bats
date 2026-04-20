@@ -783,19 +783,21 @@ setup() {
     config_backup=/etc/pihole/pihole.toml.batsbak
     backup_dir_backup=/etc/pihole/config_backups.batsbak
     cleanup() {
-      [[ -e "$config_backup" ]] && mv "$config_backup" /etc/pihole/pihole.toml || true
-      [[ -e "$backup_dir_backup" ]] && mv "$backup_dir_backup" /etc/pihole/config_backups || true
+      if [[ -e "$config_backup" ]]; then
+        mv "$config_backup" /etc/pihole/pihole.toml || { echo "Failed to restore /etc/pihole/pihole.toml" >&2; return 1; }
+      fi
+      if [[ -e "$backup_dir_backup" ]]; then
+        mv "$backup_dir_backup" /etc/pihole/config_backups || { echo "Failed to restore /etc/pihole/config_backups" >&2; return 1; }
+      fi
     }
     trap cleanup EXIT
-    mv /etc/pihole/pihole.toml "$config_backup"
-    mv /etc/pihole/config_backups "$backup_dir_backup"
+    mv /etc/pihole/pihole.toml "$config_backup" || { echo "Failed to move /etc/pihole/pihole.toml for test setup" >&2; exit 1; }
+    mv /etc/pihole/config_backups "$backup_dir_backup" || { echo "Failed to move /etc/pihole/config_backups for test setup" >&2; exit 1; }
     ./pihole-FTL --config debug.regex 2>&1
   '
   printf "%s\n" "${lines[@]}"
-  [[ $status == 1 ]]
-  [[ ${lines[0]} == *"Could not read or parse config file"* ]]
-  [[ ${lines[0]} == *'"/etc/pihole/pihole.toml"'* ]]
-  [[ ${lines[0]} == *"backup files"* ]]
+  [[ $status -eq 1 ]]
+  [[ ${lines[0]} =~ Could not read or parse config file.*pihole\.toml.*backup files ]]
 }
 
 # NOTE: Log validation (WARNING/ERROR/CRIT/DB checks) moved to the final
