@@ -364,7 +364,11 @@ void parse_args(int argc, char *argv[])
 		// Enable stdout printing
 		cli_mode = true;
 		log_ctrl(false, false);
-		readFTLconf(&config, false);
+		if(!readFTLconf(&config, false))
+		{
+			printf("Error: Could not read config file\n");
+			exit(EXIT_FAILURE);
+		}
 		log_ctrl(false, true);
 		clear_debug_flags(); // No debug printing wanted
 		if(argc == 2)
