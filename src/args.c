@@ -366,7 +366,11 @@ void parse_args(int argc, char *argv[])
 		log_ctrl(false, false);
 		if(!readFTLconf(&config, false))
 		{
-			printf("Error: Could not read config file\n");
+			fprintf(stderr,
+			        "Error: Could not read or parse config file \"%s\" or its backup files. "
+			        "Please check that the file is accessible and that permissions are correct, "
+			        "or try running with sudo.\n",
+			        GLOBALTOMLPATH);
 			exit(EXIT_FAILURE);
 		}
 		log_ctrl(false, true);
