@@ -1382,8 +1382,12 @@ void gravityDB_recheck_clients(void)
 		clientsData *client = getClient(clientID, true);
 		// Skip recycled client and mature clients (reread_groups >=
 		// NUM_RECHECKS) which have already been rechecked the maximum
-		// number of times
-		if(client == NULL || client->reread_groups >= NUM_RECHECKS)
+		// number of times. Also skip alias clients. They are meta-clients,
+		// only, and never issue queries themselves, so they also don't
+		// need to be rechecked.
+		if(client == NULL ||
+		   client->reread_groups >= NUM_RECHECKS ||
+		   client->flags.aliasclient)
 			continue;
 
 		const time_t diff = now - (time_t)client->firstSeen;
