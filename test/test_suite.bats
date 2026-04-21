@@ -797,7 +797,7 @@ setup() {
   '
   printf "%s\n" "${lines[@]}"
   [[ $status -eq 1 ]]
-  [[ ${lines[0]} =~ Could not read or parse config file.*pihole\.toml.*backup files ]]
+  [[ ${lines[0]} == *'Could not read or parse config file "/etc/pihole/pihole.toml" or its backup files.'* ]]
 }
 
 # NOTE: Log validation (WARNING/ERROR/CRIT/DB checks) moved to the final
