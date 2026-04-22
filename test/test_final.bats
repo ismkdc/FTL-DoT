@@ -3,10 +3,14 @@
 # This file runs AFTER both test_suite.bats and the pytest API tests
 # to catch any unexpected log messages produced during the entire run.
 
+# Load BATS libraries for enhanced testing capabilities
+load 'libs/bats-support/load'
+load 'libs/bats-assert/load'
+
 @test "No WARNING messages in FTL.log (besides known warnings)" {
   run bash -c 'grep "WARNING:" /var/log/pihole/FTL.log | grep -v -E "CAP_NET_ADMIN|CAP_NET_RAW|CAP_SYS_NICE|CAP_IPC_LOCK|CAP_CHOWN|CAP_NET_BIND_SERVICE|CAP_SYS_TIME|FTLCONF_|(negative DS reply without NS record received for ftl)|(nameserver 127.0.0.1 refused to do a recursive query)|API: Config item is invalid|API: Config item validation failed|API: Not found|API: Config items set via environment variables|API: Rate-limiting login attempts|API: You need to specify both|API: No request body data|API: Invalid request|API: Rate-limiting 2FA token requests|2FA code has already been used|API: Reused 2FA token"'
   printf "%s\n" "${lines[@]}"
-  [[ "${lines[@]}" == "" ]]
+  refute_output
 }
 
 @test "No ERROR messages in FTL.log (besides known/intended errors)" {
@@ -14,19 +18,19 @@
   printf "%s\n" "${lines[@]}"
   run bash -c 'grep "ERROR: " /var/log/pihole/FTL.log | grep -c -v -E "(index\.html)|(Failed to create shared memory object)|(FTLCONF_debug_api is not a boolean)|(FTLCONF_files_pcap)|(Failed to set|adjust time during NTP sync: Insufficient permissions)|(nlrequest error)|(Failed to read ARP cache)"'
   printf "count: %s\n" "${lines[@]}"
-  [[ ${lines[0]} == "0" ]]
+  assert_line --index 0 "0"
 }
 
 @test "No CRIT messages in FTL.log (besides error due to starting FTL more than once)" {
   run bash -c 'grep "CRIT:" /var/log/pihole/FTL.log | grep -v "CRIT: pihole-FTL is already running"'
   printf "%s\n" "${lines[@]}"
-  [[ "${lines[@]}" == "" ]]
+  refute_output
 }
 
 @test "No \"DB not available\" messages in FTL.log" {
   run bash -c 'grep -c "database not available" /var/log/pihole/FTL.log'
   printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "0" ]]
+  assert_line --index 0 "0"
 }
 
 @test "Expected number of config file rotations" {
@@ -42,7 +46,7 @@
   printf "pihole.toml write count: %s\n" "${lines[0]}"
   # On RISCV64, pytest is skipped (too slow), so only BATS writes occur
   if [[ "${CI_ARCH}" == "linux/riscv64" ]]; then
-    [[ ${lines[0]} == "1" ]]
+      assert_line --index 0 "1"
   else
     [[ ${lines[0]} == "18" ]]
   fi
@@ -51,17 +55,18 @@
   run bash -c 'grep -c "pihole.toml unchanged" /var/log/pihole/FTL.log'
   printf "pihole.toml unchanged count: %s\n" "${lines[0]}"
   [[ ${lines[0]} -ge 2 ]]
+  assert_success
   run bash -c 'grep -c "DEBUG_CONFIG: Config file written to /etc/pihole/dnsmasq.conf" /var/log/pihole/FTL.log'
   printf "dnsmasq.conf write count: %s\n" "${lines[0]}"
-  [[ ${lines[0]} == "1" ]]
+  assert_line --index 0 "1"
   run bash -c 'grep -c "DEBUG_CONFIG: HOSTS file written to /etc/pihole/hosts/custom.list" /var/log/pihole/FTL.log'
   printf "custom.list write count: %s\n" "${lines[0]}"
   # On RISCV64, pytest is skipped, so only BATS writes occur (3x)
   # Otherwise, pytest dns/hosts config array PUT + DELETE add 2 more (5x)
   if [[ "${CI_ARCH}" == "linux/riscv64" ]]; then
-    [[ ${lines[0]} == "3" ]]
+    assert_line --index 0 "3"
   else
-    [[ ${lines[0]} == "5" ]]
+    assert_line --index 0 "5"
   fi
 }
 
@@ -76,7 +81,7 @@
     sleep 2
   done
   printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
+  assert_line --index 0 "1"
 }
 
 @test "FTL terminates with message" {
@@ -87,19 +92,19 @@
 
   run bash -c "kill $pid"
   printf "%s\n" "${lines[@]}"
-  [[ $status == 0 ]]
+  assert_success
 
   # Wait until pihole-FTL has terminated
   run bash -c "./pihole-FTL wait-for '########## FTL terminated after' /var/log/pihole/FTL.log 30 $logsize_before"
   printf "%s\n" "${lines[@]}"
-  [[ $status == 0 ]]
+  assert_success
 }
 
 @test "Shutdown reason logged at INFO level (#2818)" {
   # Verify the shutdown path now logs at INFO level instead of DEBUG-only
   run bash -c 'grep "INFO: Shutting down (exit code" /var/log/pihole/FTL.log'
   printf "%s\n" "${lines[@]}"
-  [[ $status == 0 ]]
+  assert_success
 }
 
 @test "SIGTERM source re-logged near final termination message (#2818)" {
@@ -107,13 +112,13 @@
   # near the "FTL terminated" message even in truncated logs
   run bash -c 'grep "INFO: Terminated by" /var/log/pihole/FTL.log'
   printf "%s\n" "${lines[@]}"
-  [[ $status == 0 ]]
+  assert_success
 
   # Verify ordering: "Terminated by" must appear AFTER "Shutting down" and
   # BEFORE the final "FTL terminated" message
   run bash -c 'grep -n "Shutting down (exit code\|Terminated by\|FTL terminated after" /var/log/pihole/FTL.log | tail -3'
   printf "ordering: %s\n" "${lines[@]}"
-  [[ "${lines[0]}" == *"Shutting down (exit code"* ]]
-  [[ "${lines[1]}" == *"Terminated by"* ]]
-  [[ "${lines[2]}" == *"FTL terminated after"* ]]
+  assert_line --partial --index 0 "Shutting down (exit code"
+  assert_line --partial --index 1 "Terminated by"
+  assert_line --partial --index 2 "FTL terminated after"
 }
