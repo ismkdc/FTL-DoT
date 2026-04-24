@@ -1281,12 +1281,6 @@
       unit = "C"
 
 [files]
-  # The file which contains the PID of FTL's main process.
-  #
-  # Allowed values are:
-  #     Any writable file
-  pid = "/run/pihole-FTL.pid"
-
   # The location of FTL's long-term database
   #
   # Allowed values are:
@@ -1743,7 +1737,7 @@
   all = true ### CHANGED, default = false
 
 # Configuration statistics:
-# 167 total entries out of which 113 entries are default
+# 166 total entries out of which 112 entries are default
 # --> 54 entries are modified
 # 3 entries are forced through environment:
 #   - misc.nice
