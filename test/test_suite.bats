@@ -1,9 +1,9 @@
-#!./test/libs/bats/bin/bats
+#!/usr/bin/env bats
 
 # Load BATS libraries for enhanced testing capabilities
-load 'libs/bats-support/load'
-load 'libs/bats-assert/load'
-load 'libs/bats-file/load'
+bats_load_library 'bats-support'
+bats_load_library 'bats-assert'
+bats_load_library 'bats-file'
 
 # Log the current test description to the FTL log at the start of each test.
 # `setup()` is run by bats before every `@test` block.
