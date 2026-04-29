@@ -216,7 +216,7 @@ fi
 # If we want to attach the debugger, we do this here
 if [[ -n "${debug}" ]]; then
     echo "Waiting for pihole-FTL to start..."
-    pid_file=$(pihole-FTL --config files.pid)
+    pid_file=/run/pihole-FTL.pid
 
     # Loop until the pid file is created and non-empty
     while [ ! -f "${pid_file}" ] || [ ! -s "${pid_file}" ]; do

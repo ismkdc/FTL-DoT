@@ -529,7 +529,7 @@ void initConfig(struct config *conf)
 	conf->dns.interface.t = CONF_STRING;
 	conf->dns.interface.f = FLAG_RESTART_FTL;
 	conf->dns.interface.d.s = (char*)"";
-	conf->dns.interface.c = validate_stub; // Type-based checking + dnsmasq syntax checking
+	conf->dns.interface.c = validate_str_no_newline;
 	
 	conf->dns.hostRecord.k = "dns.hostRecord";
 	conf->dns.hostRecord.h = "Add an A, AAAA and PTR record to the DNS. This adds a singular name to the DNS with associated IPv4 (A) and IPv6 (AAAA) records\n\n Example: \"laptop,laptop.lan,192.168.0.1,1234::100\"";
@@ -1305,14 +1305,7 @@ void initConfig(struct config *conf)
 	conf->webserver.api.temp.unit.c = validate_stub; // Only type-based checking
 
 	// struct files
-	conf->files.pid.k = "files.pid";
-	conf->files.pid.h = "The file which contains the PID of FTL's main process.";
-	conf->files.pid.a = cJSON_CreateStringReference("Any writable file");
-	conf->files.pid.t = CONF_STRING;
-	conf->files.pid.f = FLAG_RESTART_FTL;
-	conf->files.pid.d.s = (char*)"/run/pihole-FTL.pid";
-	conf->files.pid.c = validate_filepath;
-
+	// Note: files.pid is hardcoded as FTL_PID_FILE — see GHSA-6w8x-p785-6pm4
 	conf->files.database.k = "files.database";
 	conf->files.database.h = "The location of FTL's long-term database";
 	conf->files.database.a = cJSON_CreateStringReference("Any FTL database");

@@ -629,6 +629,7 @@ void log_sigterm_info(void)
 	else
 		strcpy(kill_user, "N/A");
 
+	// Log who sent the signal and store for re-logging during cleanup (#2818)
 	log_info("Asked to terminate by \"%s\" (PID %ld, user %s UID %ld)",
 	         kill_name, (long int)kill_pid, kill_user, (long int)kill_uid);
 	snprintf(term_source, sizeof(term_source),
