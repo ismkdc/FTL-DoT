@@ -217,6 +217,8 @@ static void str_hash_insert(uint32_t hash, uint32_t offset)
 
 // Search the hash table for a string. Returns the pool offset, or SIZE_MAX if
 // not found. On hash collision, verifies with memcmp against the pool.
+// Important: len must include the terminating character, and the hash must have
+// been calculated over the entire string including the terminator
 static size_t str_hash_find(uint32_t hash, const char *input, size_t len)
 {
 	if(str_hash_table == NULL || str_hash_cap == 0)
@@ -228,6 +230,10 @@ static size_t str_hash_find(uint32_t hash, const char *input, size_t len)
 		if(str_hash_table[idx].hash == hash)
 		{
 			const char *candidate = &((const char*)shm_strings.ptr)[str_hash_table[idx].offset];
+			// Uses memcmp with the length of the input string (including the
+			// terminating character) instead of strcmp since bounded compares
+			// are safe here (terminating NUL included in len) and always faster
+			// (no internal strlen() calls)
 			if(memcmp(candidate, input, len) == 0)
 				return (size_t)str_hash_table[idx].offset;
 		}
@@ -374,6 +380,9 @@ size_t _addstr(const char *input, const char *func, const int line, const char *
 	str_hash_sync();
 
 	// O(1) hash-table lookup for an existing copy of this string
+	// Note: len contains the terminating character, which is also included in
+	// the hash and memcmp to allow deduplication of *identical* strings that
+	// differ only in length
 	const uint32_t hash = hashStr(input);
 	const size_t existing = str_hash_find(hash, input, len);
 	if(existing != SIZE_MAX)
