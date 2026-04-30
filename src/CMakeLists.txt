@@ -370,7 +370,42 @@ endif()
 # (e.g. "src/args.c" instead of "/home/user/FTL/src/args.c").
 target_compile_definitions(core PRIVATE SOURCE_ROOT="${CMAKE_SOURCE_DIR}/")
 
+option(USE_CONNTRACK "Build FTL with dnsmasq conntrack support, if available" ON)
 
+check_include_file("libnetfilter_conntrack/libnetfilter_conntrack.h" HAVE_LIBNETFILTER_CONNTRACK_H)
+find_library(LIBNETFILTER_CONNTRACK NAMES libnetfilter_conntrack${LIBRARY_SUFFIX} netfilter_conntrack)
+if(HAVE_LIBNETFILTER_CONNTRACK_H AND LIBNETFILTER_CONNTRACK AND USE_CONNTRACK)
+    message(STATUS "Building FTL with dnsmasq conntrack support: YES")
+    target_compile_definitions(dnsmasq PRIVATE HAVE_CONNTRACK)
+    target_link_libraries(pihole-FTL ${LIBNETFILTER_CONNTRACK})
+else()
+    message(STATUS "Building FTL with dnsmasq conntrack support: NO")
+endif()
+
+option(USE_NFTSET "Build FTL with dnsmasq nftset support, if available" ON)
+
+check_include_file("nftables/libnftables.h" HAVE_LIBNFTABLES_H)
+find_library(LIBNFTABLES NAMES libnftables${LIBRARY_SUFFIX} nftables)
+if(HAVE_LIBNFTABLES_H AND LIBNFTABLES AND USE_NFTSET)
+    message(STATUS "Building FTL with dnsmasq nftset support: YES")
+    target_compile_definitions(dnsmasq PRIVATE HAVE_NFTSET)
+    target_link_libraries(pihole-FTL ${LIBNFTABLES})
+else()
+    message(STATUS "Building FTL with dnsmasq nftset support: NO")
+endif()
+
+option(USE_DBUS "Build FTL with dnsmasq DBus support, if available" ON)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}")
+find_package(DBus)
+if(DBUS_FOUND AND USE_DBUS)
+    message(STATUS "Building FTL with dnsmasq DBus support: YES")
+    target_compile_definitions(dnsmasq PRIVATE HAVE_DBUS)
+    target_include_directories(dnsmasq PRIVATE ${DBUS_INCLUDE_DIRS})
+    target_link_libraries(pihole-FTL ${DBUS_LIBRARIES})
+else()
+    message(STATUS "Building FTL with dnsmasq DBus support: NO")
+endif()
 
 option(USE_READLINE "Build FTL with readline support, if available" ON)
 

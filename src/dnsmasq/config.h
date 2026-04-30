@@ -210,11 +210,6 @@ RESOLVFILE
 #define HAVE_LUASCRIPT
 #define HAVE_LIBIDN2
 #define HAVE_DNSSEC
-#ifdef DNSMASQ_ALL_OPTS
-  #define HAVE_DBUS
-  #define HAVE_CONNTRACK
-  #define HAVE_NFTSET
-#endif
 /***********************/
 
 /* Default locations for important system files. */
