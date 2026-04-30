@@ -151,7 +151,8 @@ bool compile_regex(const char *regexin, regexData *regex, char **message)
 		// Extract regular expression pattern in front of FTL-specific syntax
 		char *saveptr = NULL;
 		char *part = strtok_r(buf, FTL_REGEX_SEP, &saveptr);
-		strncpy(rgxbuf, part, strlen(part));
+		if(part != NULL)
+			strncpy(rgxbuf, part, strlen(part));
 
 		// Analyze FTL-specific parts
 		while((part = strtok_r(NULL, FTL_REGEX_SEP, &saveptr)) != NULL)
@@ -384,6 +385,11 @@ static int match_regex(const char *input, DNSCacheData *dns_cache, const int cli
 		read_regex_from_database();
 	}
 
+	// Pre-compute pointer to this client's per-regex enabled row.
+	// Avoids repeating the row-offset multiply and bounds check on every
+	// iteration. clientID == -1 means "check all regex" (testing mode).
+	const bool *client_regex_row = (clientID >= 0) ? get_client_regex_row((unsigned int)clientID) : NULL;
+
 	// Loop over all configured regex filters of this type
 	for(unsigned int index = 0; index < num_regex[regexid]; index++)
 	{
@@ -405,7 +411,7 @@ static int match_regex(const char *input, DNSCacheData *dns_cache, const int cli
 
 		// Only use regular expressions enabled for this client
 		// We allow clientID = -1 to get all regex (for testing)
-		if(clientID >= 0 && !get_per_client_regex(clientID, regexID))
+		if(client_regex_row != NULL && !client_regex_row[regexID])
 		{
 			if(config.debug.regex.v.b)
 			{
@@ -417,6 +423,19 @@ static int match_regex(const char *input, DNSCacheData *dns_cache, const int cli
 					          regex->string, getstr(client->ippos));
 				}
 			}
+			continue;
+		}
+
+		// Check query type filtering before running the expensive regex
+		// engine. This is a simple bitmask check that can skip the
+		// entire regexec() call when the query type doesn't match.
+		if(regex->ext.query_type != 0 && dns_cache != NULL &&
+		   !(regex->ext.query_type & (1 << dns_cache->query_type)))
+		{
+			log_debug(DEBUG_REGEX, "Regex %s (%u, DB ID %i) SKIPPED: \"%s\" vs. \"%s\""
+			                       " (query type mismatch)",
+			          regextype[regexid], index, regex->database_id,
+			          input, regex->string);
 			continue;
 		}
 
@@ -433,25 +452,16 @@ static int match_regex(const char *input, DNSCacheData *dns_cache, const int cli
 			// Check possible additional regex settings
 			if(dns_cache != NULL)
 			{
-				// Check query type filtering
-				if(regex->ext.query_type != 0)
-				{
-					if(!(regex->ext.query_type & (1 << dns_cache->query_type)))
-					{
-						log_debug(DEBUG_REGEX, "Regex %s (%u, DB ID %i) NO match: \"%s\" vs. \"%s\""
-						                       " (skipped because of query type mismatch)",
-						          regextype[regexid], index, regex->database_id,
-						          input, regex->string);
-						continue;
-					}
-				}
 				// Set special reply type if configured for this regex
 				if(regex->ext.reply != REPLY_UNKNOWN)
 					dns_cache->force_reply = regex->ext.reply;
 
-				// Set CNAME target if configured for this regex
+				// Store CNAME target in the shared string pool so the
+				// position can be shared safely across process boundaries.
+				// A raw heap pointer cannot be stored in SHM since it is
+				// only valid in the process that wrote it.
 				if(regex->ext.cname_target != NULL)
-					dns_cache->cname_target = regex->ext.cname_target;
+					dns_cache->cname_strpos = addstr(regex->ext.cname_target);
 			}
 
 			// Match, return true
@@ -588,36 +598,39 @@ void resolve_regex_cnames(void)
 			hints.ai_socktype = SOCK_STREAM;
 
 			// Resolve CNAME target to IPv4 address using getaddrinfo()
-			struct addrinfo *result;
-			if(getaddrinfo(regex[index].ext.cname_target, NULL, &hints, &result) == 0 && result->ai_family == AF_INET)
+			struct addrinfo *result = NULL;
+			if(getaddrinfo(regex[index].ext.cname_target, NULL, &hints, &result) == 0)
 			{
-				regex[index].ext.custom_ip4 = true;
-				struct sockaddr_in *addr_in = (void *)result->ai_addr;
-				memcpy(&regex[index].ext.addr4, &addr_in->sin_addr, sizeof(regex[index].ext.addr4));
-				char buffer[INET_ADDRSTRLEN];
-				log_debug(DEBUG_REGEX, "Resolved CNAME target \"%s\" to IPv4 address %s for regex filter %i",
-				          regex[index].ext.cname_target, inet_ntop(AF_INET, &regex[index].ext.addr4, buffer, INET_ADDRSTRLEN), regex[index].database_id);
+				if(result->ai_family == AF_INET)
+				{
+					regex[index].ext.custom_ip4 = true;
+					struct sockaddr_in *addr_in = (void *)result->ai_addr;
+					memcpy(&regex[index].ext.addr4, &addr_in->sin_addr, sizeof(regex[index].ext.addr4));
+					char buffer[INET_ADDRSTRLEN];
+					log_debug(DEBUG_REGEX, "Resolved CNAME target \"%s\" to IPv4 address %s for regex filter %i",
+					          regex[index].ext.cname_target, inet_ntop(AF_INET, &regex[index].ext.addr4, buffer, INET_ADDRSTRLEN), regex[index].database_id);
+				}
+				freeaddrinfo(result);
 			}
-
-			// Free result
-			freeaddrinfo(result);
 
 			// Prepare hints for getaddrinfo()
 			hints.ai_family = AF_INET6;
 
 			// Resolve CNAME target to IPv6 address using getaddrinfo()
-			if(getaddrinfo(regex[index].ext.cname_target, NULL, &hints, &result) == 0 && result->ai_family == AF_INET6)
+			result = NULL;
+			if(getaddrinfo(regex[index].ext.cname_target, NULL, &hints, &result) == 0)
 			{
-				regex[index].ext.custom_ip6 = true;
-				struct sockaddr_in6 *addr_in = (void *)(result->ai_addr);
-				memcpy(&regex[index].ext.addr6, &addr_in->sin6_addr, sizeof(regex[index].ext.addr6));
-				char buffer[INET6_ADDRSTRLEN];
-				log_debug(DEBUG_REGEX, "Resolved CNAME target \"%s\" to IPv6 address %s for regex filter %i",
-				          regex[index].ext.cname_target, inet_ntop(AF_INET6, &regex[index].ext.addr6, buffer, INET6_ADDRSTRLEN), regex[index].database_id);
+				if(result->ai_family == AF_INET6)
+				{
+					regex[index].ext.custom_ip6 = true;
+					struct sockaddr_in6 *addr_in = (void *)(result->ai_addr);
+					memcpy(&regex[index].ext.addr6, &addr_in->sin6_addr, sizeof(regex[index].ext.addr6));
+					char buffer[INET6_ADDRSTRLEN];
+					log_debug(DEBUG_REGEX, "Resolved CNAME target \"%s\" to IPv6 address %s for regex filter %i",
+					          regex[index].ext.cname_target, inet_ntop(AF_INET6, &regex[index].ext.addr6, buffer, INET6_ADDRSTRLEN), regex[index].database_id);
+				}
+				freeaddrinfo(result);
 			}
-
-			// Free result
-			freeaddrinfo(result);
 		}
 	}
 }

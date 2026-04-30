@@ -396,7 +396,8 @@ int set_config_from_CLI(const char *key, const char *value)
 		if(is_pihole)
 			printf("Permission error: CAP_CHOWN is missing on the binary\n");
 		else
-			printf("Permission error: User %s is not allowed to edit Pi-hole's config\n", current_user->pw_name);
+			printf("Permission error: User %s is not allowed to edit Pi-hole's config\n",
+			       current_user != NULL ? current_user->pw_name : "(unknown)");
 
 		printf("Please run this command using sudo\n\n");
 		return EXIT_FAILURE;

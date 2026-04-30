@@ -229,6 +229,8 @@ const char *debugstr(const enum debug_flag flag)
 			return "DEBUG_NETLINK";
 		case DEBUG_TIMING:
 			return "DEBUG_TIMING";
+		case DEBUG_PERFORMANCE:
+			return "DEBUG_PERFORMANCE";
 		case DEBUG_MAX:
 			return "DEBUG_MAX";
 		case DEBUG_NONE: // fall through
@@ -742,7 +744,9 @@ void add_to_fifo_buffer(const enum fifo_logs which, const char *payload, const c
 	// Copy string
 	// We need to use the pre-allocated buffer in shared memory as we share
 	// this FIFO with forks and friends, so we can't use strdup()
-	size_t copybytes = length < MAX_MSG_FIFO ? length : MAX_MSG_FIFO;
+	// Reserve one byte for the NUL terminator so we never write past the end
+	// of message[idx] (which is MAX_MSG_FIFO bytes, indices 0..MAX_MSG_FIFO-1)
+	size_t copybytes = length < (MAX_MSG_FIFO - 1u) ? length : (MAX_MSG_FIFO - 1u);
 	memcpy(fifo_log->logs[which].message[idx], payload, copybytes);
 
 	// Zero-terminate buffer, truncate newline if found
@@ -751,10 +755,14 @@ void add_to_fifo_buffer(const enum fifo_logs which, const char *payload, const c
 	else
 		fifo_log->logs[which].message[idx][copybytes] = '\0';
 
-	// Replace last three bytes by "..." if we truncated the message
-	if(copybytes == MAX_MSG_FIFO)
-		for(unsigned int i = 0; i < 4; i++)
-			fifo_log->logs[which].message[idx][MAX_MSG_FIFO - 4 + i] = '.';
+	// Replace last bytes by "...\0" if we truncated the message
+	if(length >= MAX_MSG_FIFO)
+	{
+		fifo_log->logs[which].message[idx][MAX_MSG_FIFO - 4] = '.';
+		fifo_log->logs[which].message[idx][MAX_MSG_FIFO - 3] = '.';
+		fifo_log->logs[which].message[idx][MAX_MSG_FIFO - 2] = '.';
+		fifo_log->logs[which].message[idx][MAX_MSG_FIFO - 1] = '\0';
+	}
 
 	// Set timestamp
 	fifo_log->logs[which].timestamp[idx] = now;

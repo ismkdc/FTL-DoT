@@ -83,6 +83,7 @@ static void subnet_match_impl(sqlite3_context *context, int argc, sqlite3_value 
 	if(cidr < 0 || cidr > (isIPv6_DB ? 128 : 32))
 	{
 		log_err("SQL: Invalid CIDR value %d in database entry: %s", cidr, addrDBcidr);
+		free(addrDB);
 		sqlite3_result_int(context, 0);
 		return;
 	}

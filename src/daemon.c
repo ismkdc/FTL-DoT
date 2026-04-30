@@ -406,6 +406,9 @@ void set_nice(void)
 // Clean up on exit
 void cleanup(const int ret)
 {
+	// Log deferred SIGTERM sender info (safe here, outside signal context)
+	log_sigterm_info();
+
 	// Do proper cleanup only if FTL started successfully
 	if(resolver_ready)
 	{

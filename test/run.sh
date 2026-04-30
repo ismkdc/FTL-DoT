@@ -20,14 +20,15 @@ while pidof -s pihole-FTL > /dev/null; do
 done
 
 # Clean up possible old files from earlier test runs
-rm -rf /etc/pihole /var/log/pihole /dev/shm/FTL-*
+rm -rf /etc/pihole /etc/dnsmasq.d /var/log/pihole /dev/shm/FTL-*
+rm -f /tmp/dnsmasq_warnings /tmp/ftl_test_*.json
 
 # Create necessary directories and files
 mkdir -p /home/pihole /etc/pihole /run/pihole /var/log/pihole /etc/pihole/config_backups /var/www/html
 echo "" > /var/log/pihole/FTL.log
 echo "" > /var/log/pihole/pihole.log
 echo "" > /var/log/pihole/webserver.log
-touch /run/pihole-FTL.pid dig.log ptr.log
+touch /run/pihole-FTL.pid ptr.log
 touch /etc/pihole/dhcp.leases
 chown -R pihole:pihole /etc/pihole /run/pihole /var/log/pihole
 chown pihole:pihole /run/pihole-FTL.pid
@@ -56,7 +57,7 @@ cp test/pihole.toml /etc/pihole/pihole.toml
 chown pihole:pihole /etc/pihole/pihole.toml
 
 # Prepare 01-pihole-tests.conf
-mkdir /etc/dnsmasq.d
+mkdir -p /etc/dnsmasq.d
 cp test/01-pihole-tests.conf /etc/dnsmasq.d/01-pihole-tests.conf
 
 # Prepare versions file (read by /api/version)
@@ -166,9 +167,6 @@ if [[ $RET != 0 ]]; then
   echo ""
   echo -n "pihole/FTL.log: "
   curl_to_tricorder /var/log/pihole/FTL.log
-  echo ""
-  echo -n "dig.log: "
-  curl_to_tricorder ./dig.log
   echo ""
   echo -n "ptr.log: "
   curl_to_tricorder ./ptr.log

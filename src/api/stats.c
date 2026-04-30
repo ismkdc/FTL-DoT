@@ -78,6 +78,27 @@ static int __attribute__((pure)) cmpdesc_te(const void *a, const void *b)
 		return 0;
 }
 
+// Min-heap sift-down for top-K selection: maintain the smallest element at the
+// root so it can be replaced when a larger one is found
+static void heap_sift_down(struct top_entries *heap, const unsigned int size, unsigned int i)
+{
+	for(;;)
+	{
+		unsigned int min = i;
+		const unsigned int l = 2*i + 1, r = 2*i + 2;
+		if(l < size && heap[l].count < heap[min].count)
+			min = l;
+		if(r < size && heap[r].count < heap[min].count)
+			min = r;
+		if(min == i)
+			break;
+		const struct top_entries tmp = heap[i];
+		heap[i] = heap[min];
+		heap[min] = tmp;
+		i = min;
+	}
+}
+
 static int get_query_types_obj(struct ftl_conn *api, cJSON *types)
 {
 	for(unsigned int i = TYPE_A; i < TYPE_MAX; i++)
@@ -210,14 +231,21 @@ cJSON *get_top_domains(struct ftl_conn *api, const int count,
 	const unsigned int domains = counters->domains;
 	const unsigned int total_queries = counters->queries;
 	const unsigned int blocked_count = get_blocked_count();
-	struct top_entries *top_domains = calloc(domains, sizeof(struct top_entries));
-	if(top_domains == NULL)
+
+	// Heap-based top-K selection: allocate only for the top entries
+	// rather than for all domains, reducing memory from O(N) to O(K).
+	const unsigned int k = count > 0 ? (unsigned int)count : 1u;
+	const unsigned int heap_cap = (k <= domains / 4) ? k * 4 : domains;
+	struct top_entries *top_domains = heap_cap > 0 ? calloc(heap_cap, sizeof(struct top_entries)) : NULL;
+	if(heap_cap > 0 && top_domains == NULL)
 	{
 		log_err("Memory allocation failed in %s()", __FUNCTION__);
+		unlock_shm();
 		return NULL;
 	}
 
-	unsigned int added_domains = 0u;
+	unsigned int heap_size = 0;
+	bool heap_ready = false;
 	for(unsigned int domainID = 0; domainID < domains; domainID++)
 	{
 		// Get domain pointer
@@ -232,20 +260,44 @@ cJSON *get_top_domains(struct ftl_conn *api, const int count,
 			continue;
 
 		// Use either blocked or total count based on request string
-		top_domains[added_domains].count = blocked ? domain->blockedcount : domain->count - domain->blockedcount;
+		const int entry_count = blocked ? domain->blockedcount : domain->count - domain->blockedcount;
 
-		// Get domain name
-		top_domains[added_domains].namepos = domain->domainpos;
+		// Skip zero-count entries early
+		if(entry_count < 1)
+			continue;
 
-		// Increment counter
-		added_domains++;
+		if(heap_size < heap_cap)
+		{
+			// Heap not full yet, append directly
+			top_domains[heap_size].count = entry_count;
+			top_domains[heap_size].namepos = domain->domainpos;
+			heap_size++;
+		}
+		else
+		{
+			// Build min-heap once on first overflow
+			if(!heap_ready)
+			{
+				for(int j = (int)(heap_size / 2) - 1; j >= 0; j--)
+					heap_sift_down(top_domains, heap_size, (unsigned int)j);
+				heap_ready = true;
+			}
+			// Replace root (minimum) if this entry is larger
+			if(entry_count > top_domains[0].count)
+			{
+				top_domains[0].count = entry_count;
+				top_domains[0].namepos = domain->domainpos;
+				heap_sift_down(top_domains, heap_size, 0);
+			}
+		}
 	}
 
 	// Unlock shared memory
 	unlock_shm();
 
-	// Sort temporary array
-	qsort(top_domains, added_domains, sizeof(*top_domains), cmpdesc_te);
+	// Sort the small heap array descending
+	if(heap_size > 1)
+		qsort(top_domains, heap_size, sizeof(*top_domains), cmpdesc_te);
 
 	int n = 0;
 	cJSON *jtop_domains = cJSON_CreateArray();
@@ -253,7 +305,7 @@ cJSON *get_top_domains(struct ftl_conn *api, const int count,
 	// Lock shared memory
 	lock_shm();
 
-	for(unsigned int i = 0; i < added_domains; i++)
+	for(unsigned int i = 0; i < heap_size; i++)
 	{
 		// Skip e.g. recycled domains
 		if(top_domains[i].namepos == 0)
@@ -302,7 +354,8 @@ cJSON *get_top_domains(struct ftl_conn *api, const int count,
 	unlock_shm();
 
 	// Free temporary array
-	free(top_domains);
+	if(top_domains != NULL)
+		free(top_domains);
 
 	// Free regexes
 	if(N_regex_domains > 0)
@@ -376,14 +429,21 @@ cJSON *get_top_clients(struct ftl_conn *api, const int count,
 	const unsigned int clients = counters->clients;
 	const int total_queries = counters->queries;
 	const int blocked_count = get_blocked_count();
-	struct top_entries *top_clients = calloc(clients, sizeof(struct top_entries));
-	if(top_clients == NULL)
+
+	// Heap-based top-K selection: allocate only for the top entries
+	// rather than for all clients, reducing memory from O(N) to O(K).
+	const unsigned int k = count > 0 ? (unsigned int)count : 1u;
+	const unsigned int heap_cap = (k <= clients / 4) ? k * 4 : clients;
+	struct top_entries *top_clients = heap_cap > 0 ? calloc(heap_cap, sizeof(struct top_entries)) : NULL;
+	if(heap_cap > 0 && top_clients == NULL)
 	{
 		log_err("Memory allocation failed in %s()", __FUNCTION__);
+		unlock_shm();
 		return 0;
 	}
 
-	unsigned int added_clients = 0;
+	unsigned int heap_size = 0;
+	bool heap_ready = false;
 	for(unsigned int clientID = 0; clientID < clients; clientID++)
 	{
 		// Get client pointer
@@ -413,22 +473,48 @@ cJSON *get_top_clients(struct ftl_conn *api, const int count,
 		}
 
 		// Use either blocked or total count based on request string
-		top_clients[added_clients].count = blocked ? client->blockedcount : client->count;
+		const int entry_count = blocked ? client->blockedcount : client->count;
 
-		// Get client name and IP
-		top_clients[added_clients].ippos = client->ippos;
-		top_clients[added_clients].namepos = client->namepos;
+		// Skip zero-count entries early
+		if(entry_count < 1)
+			continue;
 
-		added_clients++;
+		if(heap_size < heap_cap)
+		{
+			// Heap not full yet, append directly
+			top_clients[heap_size].count = entry_count;
+			top_clients[heap_size].ippos = client->ippos;
+			top_clients[heap_size].namepos = client->namepos;
+			heap_size++;
+		}
+		else
+		{
+			// Build min-heap once on first overflow
+			if(!heap_ready)
+			{
+				for(int j = (int)(heap_size / 2) - 1; j >= 0; j--)
+					heap_sift_down(top_clients, heap_size, (unsigned int)j);
+				heap_ready = true;
+			}
+			// Replace root (minimum) if this entry is larger
+			if(entry_count > top_clients[0].count)
+			{
+				top_clients[0].count = entry_count;
+				top_clients[0].ippos = client->ippos;
+				top_clients[0].namepos = client->namepos;
+				heap_sift_down(top_clients, heap_size, 0);
+			}
+		}
 	}
 
-	log_debug(DEBUG_API, "Found %u clients", added_clients);
+	log_debug(DEBUG_API, "Found %u clients (heap selected from %u)", heap_size, clients);
 
 	// Unlock shared memory
 	unlock_shm();
 
-	// Sort temporary array
-	qsort(top_clients, added_clients, sizeof(*top_clients), cmpdesc_te);
+	// Sort the small heap array descending
+	if(heap_size > 1)
+		qsort(top_clients, heap_size, sizeof(*top_clients), cmpdesc_te);
 
 	// Get clients which the user doesn't want to see
 	regex_t *regex_clients = NULL;
@@ -443,7 +529,7 @@ cJSON *get_top_clients(struct ftl_conn *api, const int count,
 	// Lock shared memory
 	lock_shm();
 
-	for(unsigned int i = 0; i < added_clients; i++)
+	for(unsigned int i = 0; i < heap_size; i++)
 	{
 		const char *client_ip = getstr(top_clients[i].ippos);
 		const char *client_name = getstr(top_clients[i].namepos);
@@ -512,7 +598,8 @@ cJSON *get_top_clients(struct ftl_conn *api, const int count,
 	unlock_shm();
 
 	// Free temporary array
-	free(top_clients);
+	if(top_clients != NULL)
+		free(top_clients);
 
 	// Free regexes
 	if(N_regex_clients > 0)
@@ -596,7 +683,7 @@ cJSON *get_top_upstreams(struct ftl_conn *api, const bool upstreams_only)
 	unlock_shm();
 
 	// Sort temporary array in descending order
-	qsort(top_upstreams, added_upstreams, sizeof(*top_upstreams), cmpdesc);
+	qsort(top_upstreams, added_upstreams, sizeof(*top_upstreams), cmpdesc_te);
 
 	// Loop over available forward destinations
 	cJSON *jtop_upstreams = JSON_NEW_ARRAY();
@@ -770,7 +857,7 @@ int api_stats_recentblocked(struct ftl_conn *api)
 	// Find most recently blocked query
 	unsigned int found = 0;
 	cJSON *blocked = JSON_NEW_ARRAY();
-	for(int queryID = counters->queries - 1; queryID > 0 ; queryID--)
+	for(int queryID = counters->queries - 1; queryID >= 0 ; queryID--)
 	{
 		const queriesData *query = getQuery(queryID, true);
 		if(query == NULL)

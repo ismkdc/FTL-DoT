@@ -145,7 +145,7 @@ static bool process_alive(const pid_t pid)
 			// It typically happens when the parent (calling)
 			// program properly has not yet fetched the return
 			// status of the sub-process.
-			if(strcmp(line, "State:\tZ") == 0)
+			if(strncmp(line, "State:\tZ", 8) == 0)
 				running = false;
 
 			log_debug(DEBUG_SHMEM, "Process state: \"%s\"", line);

@@ -1,7 +1,7 @@
-# Pi-hole configuration file (v6.5-46-gb55cb419-dirty) on branch fix/print_totp_cli
+# Pi-hole configuration file (v6.5-156-g043326cc-dirty) on branch tweak/performance
 # Encoding: UTF-8
 # This file is managed by pihole-FTL
-# Last updated on 2026-03-20 19:18:20 UTC
+# Last updated on 2026-03-21 11:13:18 UTC
 
 [dns]
   # Upstream DNS Servers to be used by Pi-hole. If this is not set, Pi-hole will not
@@ -1731,14 +1731,23 @@
   #     true or false
   timing = true ### CHANGED, default = false
 
+  # Log gravity lookup and FTL DNS cache performance statistics every 5 minutes. For each
+  # operation type (gravity, antigravity, denylist, allowlist), reports the call count,
+  # average and maximum latency, and percentage of slow queries (>1 ms). Also reports
+  # the FTL cache hit/miss ratio, indicating how often gravity.db is queried at all.
+  #
+  # Allowed values are:
+  #     true or false
+  performance = true ### CHANGED, default = false
+
   # Set all debug flags at once. This is a convenience option to enable all debug flags
   # at once. Note that this option is not persistent, setting it to true will enable all
   # *remaining* debug flags but unsetting it will disable *all* debug flags.
   all = true ### CHANGED, default = false
 
 # Configuration statistics:
-# 166 total entries out of which 112 entries are default
-# --> 54 entries are modified
+# 167 total entries out of which 112 entries are default
+# --> 55 entries are modified
 # 3 entries are forced through environment:
 #   - misc.nice
 #   - misc.check.shmem

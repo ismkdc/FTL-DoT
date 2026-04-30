@@ -38,6 +38,12 @@ static volatile pid_t mpid = 0;
 static time_t FTLstarttime = 0;
 volatile int exit_code = EXIT_SUCCESS;
 
+// Saved by the SIGTERM handler for deferred logging in the main loop.
+// Only pid_t and uid_t (both integer types) are safe to write from a
+// signal handler via volatile.
+static volatile pid_t term_sender_pid = 0;
+static volatile uid_t term_sender_uid = 0;
+
 // Store the SIGTERM source for re-logging during cleanup so the termination
 // reason is always visible near the final "FTL terminated" message, even if
 // earlier log lines have been lost (see #2818)
@@ -209,9 +215,9 @@ static enum frame_result log_frame(const int idx, const void *addr, const void *
 			// Library basename (e.g. "libc.so.6")
 			const char *lib = dl.dli_fname ? strrchr(dl.dli_fname, '/') : NULL;
 			const char *libname = lib ? lib + 1 : (dl.dli_fname ? dl.dli_fname : "?");
-			// Byte offset from the nearest preceding symbol
 			const uintptr_t offset = (uintptr_t)addr - (uintptr_t)dl.dli_saddr;
-			log_info("  #%-2i  %p  (%s  %s+0x%zx)", idx, addr, libname, dl.dli_sname, (size_t)offset);
+			log_info("  #%-2d  %p in %s (+0x%zx) from %s",
+			         idx, addr, dl.dli_sname, (size_t)offset, libname);
 		}
 		else
 		{
@@ -220,9 +226,9 @@ static enum frame_result log_frame(const int idx, const void *addr, const void *
 			char mapping[128] = { 0 };
 			find_mapping_name(addr, mapping, sizeof(mapping));
 			if(mapping[0] != '\0')
-				log_info("  #%-2i  %p  (%s, no debug info)", idx, addr, mapping);
+				log_info("  #%-2d  %p in ?? () from %s", idx, addr, mapping);
 			else
-				log_info("  #%-2i  %p  (no debug info)", idx, addr);
+				log_info("  #%-2d  %p in ?? ()", idx, addr);
 		}
 		return FRAME_UNRESOLVED;
 	}
@@ -305,6 +311,8 @@ void generate_backtrace(void)
 			log_info("  addr2line -f -e \"%s\" %p", obj, rel);
 		}
 	}
+	log_info("  --- end of backtrace (%d frame%s) ---",
+	         state.count, state.count == 1 ? "" : "s");
 #else
 	log_info("!!! INFO: pihole-FTL has not been compiled with unwinding support, cannot generate backtrace !!!");
 #endif
@@ -492,8 +500,11 @@ static void SIGRT_handler(int signum, siginfo_t *si, void *context)
 		return;
 	}
 
-	int rtsig = signum - SIGRTMIN;
-	log_info("Received: %s (%d -> %d)", strsignal(signum), signum, rtsig);
+	// Do NOT call log_info() or strsignal() here — they are not
+	// async-signal-safe and can deadlock if the signal arrives while
+	// malloc's internal lock is held. The events set below are logged
+	// when processed in the main loop / database thread.
+	const int rtsig = signum - SIGRTMIN;
 
 	if(rtsig == 0)
 	{
@@ -545,17 +556,36 @@ static void SIGRT_handler(int signum, siginfo_t *si, void *context)
 static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 {
 	(void)context;
+	(void)signum;
 	// Ignore SIGTERM outside of the main process (TCP forks)
 	if(mpid != getpid())
-	{
-		log_debug(DEBUG_ANY, "Ignoring SIGTERM in TCP worker");
 		return;
-	}
-	log_debug(DEBUG_ANY, "Received SIGTERM");
 
-	// Get PID and UID of the process that sent the terminating signal
-	const pid_t kill_pid = si->si_pid;
-	const uid_t kill_uid = si->si_uid;
+	// Save sender info for deferred logging (async-signal-safe: just
+	// writing volatile integer types). The expensive lookup of the
+	// sender's process name and username is done in log_sigterm_info()
+	// called from the main loop after the signal handler returns.
+	term_sender_pid = si->si_pid;
+	term_sender_uid = si->si_uid;
+
+	// Request deferred termination. The actual raise(SIGUSR6)/killed
+	// assignment happens in terminate(), called from check_if_want_terminate()
+	// which is invoked periodically from the main loop (gc.c) — keeping
+	// the signal handler free of non-async-signal-safe calls like
+	// log_info(), time(), and gravity_running checks.
+	want_terminate = true;
+}
+
+// Log details about who sent the SIGTERM. Called from the main shutdown
+// path (outside signal context) so it is safe to use stdio, getpwuid,
+// and logging functions.
+void log_sigterm_info(void)
+{
+	const pid_t kill_pid = term_sender_pid;
+	const uid_t kill_uid = term_sender_uid;
+
+	if(kill_pid == 0)
+		return; // SIGTERM handler never ran
 
 	// Get name of the process that sent the terminating signal
 	char kill_name[256] = { 0 };
@@ -564,18 +594,11 @@ static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 	FILE *fp = fopen(kill_exe, "r");
 	if(fp != NULL)
 	{
-		// Successfully opened file
 		size_t read = 0;
-		// Read line from file
 		if((read = fread(kill_name, sizeof(char), sizeof(kill_name), fp)) > 0)
 		{
-			// Successfully read line
-
-			// cmdline contains the command-line arguments as a set
-			// of strings separated by null bytes ('\0'), with a
-			// further null byte after the last string. Hence, we
-			// need to replace all null bytes with spaces for
-			// displaying it below
+			// cmdline contains null-separated arguments — replace
+			// null bytes with spaces for display
 			for(unsigned int i = 0; i < min((size_t)read, sizeof(kill_name)); i++)
 			{
 				if(kill_name[i] == '\0')
@@ -592,30 +615,19 @@ static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 			}
 		}
 		else
-		{
-			// Failed to read line
 			strcpy(kill_name, "N/A");
-		}
+		fclose(fp);
 	}
 	else
-	{
-		// Failed to open file
 		strcpy(kill_name, "N/A");
-	}
 
 	// Get username of the process that sent the terminating signal
 	char kill_user[256] = { 0 };
 	struct passwd *pwd = getpwuid(kill_uid);
 	if(pwd != NULL)
-	{
-		// Successfully obtained username
 		strncpy(kill_user, pwd->pw_name, sizeof(kill_user));
-	}
 	else
-	{
-		// Failed to obtain username
 		strcpy(kill_user, "N/A");
-	}
 
 	// Log who sent the signal and store for re-logging during cleanup (#2818)
 	log_info("Asked to terminate by \"%s\" (PID %ld, user %s UID %ld)",
@@ -623,13 +635,10 @@ static void SIGTERM_handler(int signum, siginfo_t *si, void *context)
 	snprintf(term_source, sizeof(term_source),
 	         "\"%s\" (PID %ld, user %s UID %ld)",
 	         kill_name, (long int)kill_pid, kill_user, (long int)kill_uid);
-
-	// Check if we can terminate
-	want_terminate = true;
-	check_if_want_terminate();
 }
 
-// Checks if the program should terminate or not
+// Checks if the program should terminate or not. Called periodically from
+// the main loop (gc.c) and API action handlers — never from signal context.
 static time_t last_term_warning = 0;
 void check_if_want_terminate(void)
 {
@@ -670,23 +679,57 @@ static void terminate(void)
 }
 
 // Register ordinary signals handler
+// Alternate signal stack so the crash handler can run even when the
+// regular stack has overflowed. SIGSTKSZ is not a compile-time constant
+// on glibc >= 2.34, so use a fixed 16 KiB buffer (the minimum required
+// by POSIX is MINSIGSTKSZ which is typically 2-8 KiB; 16 KiB gives
+// ample room for the backtrace/logging calls in our crash handler).
+#define FTL_ALT_STACK_SIZE 16384
+static uint8_t alt_stack_mem[FTL_ALT_STACK_SIZE];
+
 void handle_signals(void)
 {
+	// Install an alternate signal stack for crash handlers. Without
+	// this, a stack overflow fault cannot be diagnosed because the
+	// handler itself would overflow the same stack.
+	stack_t ss = {
+		.ss_sp = alt_stack_mem,
+		.ss_size = FTL_ALT_STACK_SIZE,
+		.ss_flags = 0
+	};
+	sigaltstack(&ss, NULL);
+
 	struct sigaction old_action;
 
-	const int signals[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTERM };
-	for(unsigned int i = 0; i < ArraySize(signals); i++)
+	const int crash_signals[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE };
+	for(unsigned int i = 0; i < ArraySize(crash_signals); i++)
 	{
-		// Catch this signal
-		sigaction (signals[i], NULL, &old_action);
+		sigaction(crash_signals[i], NULL, &old_action);
 		if(old_action.sa_handler != SIG_IGN)
 		{
 			struct sigaction SIGaction = { 0 };
-			SIGaction.sa_flags = SA_SIGINFO;
+			// SA_SIGINFO:   deliver siginfo_t with fault details
+			// SA_ONSTACK:   run on the alternate signal stack
+			// SA_RESETHAND: reset to SIG_DFL after first invocation,
+			//               preventing infinite re-entry if the
+			//               handler itself faults (e.g. heap corruption
+			//               causes log_info to SIGSEGV again)
+			SIGaction.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
 			sigemptyset(&SIGaction.sa_mask);
-			SIGaction.sa_sigaction = signals[i] != SIGTERM ? &signal_handler : &SIGTERM_handler;
-			sigaction(signals[i], &SIGaction, NULL);
+			SIGaction.sa_sigaction = &signal_handler;
+			sigaction(crash_signals[i], &SIGaction, NULL);
 		}
+	}
+
+	// SIGTERM: graceful shutdown — no SA_ONSTACK or SA_RESETHAND needed
+	sigaction(SIGTERM, NULL, &old_action);
+	if(old_action.sa_handler != SIG_IGN)
+	{
+		struct sigaction SIGaction = { 0 };
+		SIGaction.sa_flags = SA_SIGINFO;
+		sigemptyset(&SIGaction.sa_mask);
+		SIGaction.sa_sigaction = &SIGTERM_handler;
+		sigaction(SIGTERM, &SIGaction, NULL);
 	}
 
 	// Log start time of FTL

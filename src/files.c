@@ -831,7 +831,7 @@ enum verify_result verify_FTL(bool verbose)
 	if(!sha256sum(filename, checksum, true))
 	{
 		log_err("Failed to calculate SHA256 checksum of %s", filename);
-		return false;
+		return VERIFY_ERROR;
 	}
 
 	// Compare the checksums

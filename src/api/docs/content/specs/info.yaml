@@ -708,8 +708,12 @@ components:
               properties:
                 gravity:
                   type: integer
-                  description: Number of collected exact domains on lists
+                  description: Number of collected exact domains on blocking lists
                   example: 67906
+                antigravity:
+                  type: integer
+                  description: Number of collected exact domains on allowing lists
+                  example: 0
                 groups:
                   type: integer
                   description: Number of groups

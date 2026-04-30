@@ -136,7 +136,14 @@ static int field_get(const char *key, const char *value, size_t valuelen, void *
 			return MG_FORM_FIELD_HANDLE_ABORT;
 		}
 		// Allocate memory for the raw file data
-		data->data = realloc(data->data, data->filesize + valuelen);
+		void *tmp = realloc(data->data, data->filesize + valuelen);
+		if(tmp == NULL)
+		{
+			log_err("Failed to allocate memory for teleporter file data (%zu bytes)",
+			        data->filesize + valuelen);
+			return MG_FORM_FIELD_HANDLE_ABORT;
+		}
+		data->data = tmp;
 		// Copy the raw file data
 		memcpy(data->data + data->filesize, value, valuelen);
 		// Store the size of the file raw data
@@ -339,6 +346,7 @@ static int process_received_zip(struct ftl_conn *api, struct upload_data *data)
 			strcat(msg, hint);
 		}
 		free_upload_data(data);
+		cJSON_Delete(json_files);
 		return send_json_error_free(api, 400,
 		                            "bad_request",
 		                            "Invalid request",
@@ -472,7 +480,8 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 
 	// Open database connection
 	sqlite3 *db = NULL;
-	if(sqlite3_open_v2(config.files.gravity.v.s, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
+	if(sqlite3_open_v2(config.files.gravity.v.s, &db,
+	                   SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK)
 	{
 		log_err("import_json_table(%s): Unable to open database file \"%s\": %s",
 		        file->filename, config.files.database.v.s, sqlite3_errmsg(db));
@@ -510,6 +519,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 		{
 			log_err("import_json_table(%s): Unable to delete entries from table \"%s\": %s",
 			        file->filename, file->table_name, sqlite3_errmsg(db));
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(db);
 			return false;
 		}
@@ -522,6 +532,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 		{
 			log_err("import_json_table(%s): Unable to delete entries from table \"%s\": %s",
 			        file->filename, file->table_name, sqlite3_errmsg(db));
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(db);
 			return false;
 		}
@@ -573,6 +584,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 	{
 		log_err("Unable to prepare SQL statement: %s", sqlite3_errmsg(db));
 		sqlite3_free(sql);
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return false;
 	}
@@ -595,6 +607,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 				{
 					log_err("Unable to bind text value to SQL statement: %s", sqlite3_errmsg(db));
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return false;
 				}
@@ -606,6 +619,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 				{
 					log_err("Unable to bind integer value to SQL statement: %s", sqlite3_errmsg(db));
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return false;
 				}
@@ -617,6 +631,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 				{
 					log_err("Unable to bind NULL value to SQL statement: %s", sqlite3_errmsg(db));
 					sqlite3_finalize(stmt);
+					sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 					sqlite3_close(db);
 					return false;
 				}
@@ -625,6 +640,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 			{
 				log_err("Unable to bind value to SQL statement: type = %X", (unsigned int)json_value->type & 0xFF);
 				sqlite3_finalize(stmt);
+				sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 				sqlite3_close(db);
 				return false;
 			}
@@ -635,6 +651,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 		{
 			log_err("Unable to execute SQL statement: %s", sqlite3_errmsg(db));
 			sqlite3_finalize(stmt);
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(db);
 			return false;
 		}
@@ -644,6 +661,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 		{
 			log_err("Unable to reset SQL statement: %s", sqlite3_errmsg(db));
 			sqlite3_finalize(stmt);
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 			sqlite3_close(db);
 			return false;
 		}
@@ -653,6 +671,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 	if(sqlite3_finalize(stmt) != SQLITE_OK)
 	{
 		log_err("Unable to finalize SQL statement: %s", sqlite3_errmsg(db));
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return false;
 	}
@@ -661,6 +680,7 @@ static bool import_json_table(cJSON *json, struct teleporter_files *file)
 	if(sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK)
 	{
 		log_err("Unable to commit transaction: %s", sqlite3_errmsg(db));
+		sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 		sqlite3_close(db);
 		return false;
 	}
@@ -855,6 +875,7 @@ static int process_received_tar_gz(struct ftl_conn *api, struct upload_data *dat
 		if(remove(path) != 0 && errno != ENOENT)
 			log_err("Unable to remove file \"%s\": %s", path, strerror(errno));
 
+		free(path);
 		free(fname);
 	}
 

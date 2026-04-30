@@ -15,6 +15,14 @@
 #include <fcntl.h>           /* For O_* constants */
 #include <stdbool.h>
 
+// Fixed epoch for DNSCacheData::expires (stored as uint32_t offset from this
+// value). Chosen to be recent enough that the offset fits comfortably in
+// uint32_t until ~2160, avoiding the Y2038 problem on all supported platforms.
+#define SHM_TIME_EPOCH 1767225600u  // 2026-01-01 00:00:00 UTC
+// Convert between absolute time_t and the stored uint32_t offset
+#define ABS_TO_SHM_TIME(t) ((uint32_t)((time_t)(t) - (time_t)SHM_TIME_EPOCH))
+#define SHM_TO_ABS_TIME(t) ((time_t)(t) + (time_t)SHM_TIME_EPOCH)
+
 // TYPE_MAX
 #include "datastructure.h"
 
@@ -31,11 +39,13 @@ typedef struct {
 	pid_t pid;
 	unsigned int global_shm_counter;
 	size_t next_str_pos;
+	size_t next_intarray_pos;
 	unsigned int qps[QPS_AVGLEN];
 } ShmSettings;
 
 typedef struct {
 	unsigned int queries;
+	unsigned int queries_offset;
 	unsigned int upstreams;
 	unsigned int clients;
 	unsigned int domains;
@@ -58,9 +68,11 @@ typedef struct {
 	unsigned int domains_lookup_size;
 	unsigned int dns_cache_lookup_MAX;
 	unsigned int dns_cache_lookup_size;
+	unsigned int intarrays_MAX;
 	unsigned int regex_change;
 	struct {
 		int gravity;
+		int antigravity;
 		int clients;
 		int groups;
 		int lists;
@@ -171,6 +183,14 @@ void init_queries_shm_sz(void);
 size_t _addstr(const char *str, const char *func, const int line, const char *file);
 #define getstr(pos) _getstr(pos, __FUNCTION__, __LINE__, __FILE__)
 const char *_getstr(const size_t pos, const char *func, const int line, const char *file);
+// Integer array SHM storage — packed as [count:int32, data[0]:int32, ...]
+// Position 0 is reserved for "empty array" (count=0).
+#define addintarray(ids, count) _addintarray(ids, count, __FUNCTION__, __LINE__, __FILE__)
+size_t _addintarray(const int32_t *ids, int count, const char *func, const int line, const char *file);
+#define getintarray(pos, count) _getintarray(pos, count, __FUNCTION__, __LINE__, __FILE__)
+const int32_t *_getintarray(const size_t pos, int *count, const char *func, const int line, const char *file);
+// Format an int array from SHM as comma-separated string for logging
+const char *fmt_intarray(const size_t pos, char *buf, const size_t bufsz);
 
 /**
  * Create a new overTime client shared memory block.
@@ -194,6 +214,7 @@ void log_shmem_details(void);
 void add_per_client_regex(unsigned int clientID);
 void reset_per_client_regex(const unsigned int clientID);
 bool get_per_client_regex(const unsigned int clientID, const unsigned int regexID);
+const bool *get_client_regex_row(const unsigned int clientID);
 void set_per_client_regex(const unsigned int clientID, const unsigned int regexID, const bool value);
 
 // Used in dnsmasq/utils.c

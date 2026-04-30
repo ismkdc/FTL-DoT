@@ -59,7 +59,11 @@ int api_history_database(struct ftl_conn *api)
 	if( rc != SQLITE_OK ){
 		log_err("api_stats_database_history() - SQL error prepare (%i): %s",
 		        rc, sqlite3_errstr(rc));
-		return false;
+		dbclose(&db);
+		return send_json_error(api, 500,
+		                       "internal_error",
+		                       "Failed to prepare statement",
+		                       NULL);
 	}
 
 	// Bind interval to prepared statement
@@ -107,12 +111,13 @@ int api_history_database(struct ftl_conn *api)
 	// Loop over returned data and accumulate results
 	cJSON *history = JSON_NEW_ARRAY();
 	cJSON *item = NULL;
-	unsigned int previous_timeslot = 0u, blocked = 0u, total = 0u, cached = 0u, forwarded = 0u;
+	time_t previous_timeslot = 0u;
+	unsigned int blocked = 0u, total = 0u, cached = 0u, forwarded = 0u;
 	while((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 	{
 		// Get timestamp and derive timeslot from it
-		const unsigned int timestamp = sqlite3_column_int(stmt, 0);
-		const unsigned int timeslot = timestamp - timestamp % interval;
+		const time_t timestamp = sqlite3_column_int64(stmt, 0);
+		const time_t timeslot = timestamp - timestamp % interval;
 		// Begin new array item for each new timeslot
 		if(timeslot != previous_timeslot)
 		{
@@ -224,21 +229,21 @@ int api_stats_database_top_items(struct ftl_conn *api)
 	{
 		if(blocked)
 		{
-			// Get domains and count of queries (blocked)
-			querystr = "SELECT COUNT(*),d.domain AS cnt FROM query_storage q "
+			// Get top domains by count of queries (blocked)
+			querystr = "SELECT COUNT(*) AS cnt,d.domain FROM query_storage q "
 			           "JOIN domain_by_id d ON d.id = q.domain "
 			           "WHERE timestamp >= :from AND timestamp <= :until "
 			           "AND " FILTER_STATUS_BLOCKED " "
-			           "GROUP by q.domain";
+			           "GROUP BY q.domain ORDER BY cnt DESC LIMIT :count";
 		}
 		else
 		{
-			// Get domains and count of queries (not blocked)
-			querystr = "SELECT COUNT(*),d.domain AS cnt FROM query_storage q "
+			// Get top domains by count of queries (not blocked)
+			querystr = "SELECT COUNT(*) AS cnt,d.domain FROM query_storage q "
 			           "JOIN domain_by_id d ON d.id = q.domain "
 			           "WHERE timestamp >= :from AND timestamp <= :until "
 			           "AND " FILTER_STATUS_NOT_BLOCKED " "
-			           "GROUP by q.domain";
+			           "GROUP BY q.domain ORDER BY cnt DESC LIMIT :count";
 		}
 
 		// Count total number of queries for domains
@@ -254,21 +259,21 @@ int api_stats_database_top_items(struct ftl_conn *api)
 	{
 		if(blocked)
 		{
-			// Get clients and count of queries (blocked)
-			querystr = "SELECT COUNT(*),c.ip,c.name AS cnt FROM query_storage q "
-			           "JOIN client_by_id c ON c.id = q.client"
+			// Get top clients by count of queries (blocked)
+			querystr = "SELECT COUNT(*) AS cnt,c.ip,c.name FROM query_storage q "
+			           "JOIN client_by_id c ON c.id = q.client "
 			           "WHERE timestamp >= :from AND timestamp <= :until "
 			           "AND " FILTER_STATUS_BLOCKED " "
-			           "GROUP by q.client";
+			           "GROUP BY q.client ORDER BY cnt DESC LIMIT :count";
 		}
 		else
 		{
-			// Get clients and count of queries (not blocked)
-			querystr = "SELECT COUNT(*),c.ip,c.name AS cnt FROM query_storage q "
+			// Get top clients by count of queries (not blocked)
+			querystr = "SELECT COUNT(*) AS cnt,c.ip,c.name FROM query_storage q "
 			           "JOIN client_by_id c ON c.id = q.client "
 			           "WHERE timestamp >= :from AND timestamp <= :until "
 			           "AND " FILTER_STATUS_NOT_BLOCKED " "
-			           "GROUP by q.client";
+			           "GROUP BY q.client ORDER BY cnt DESC LIMIT :count";
 		}
 
 		// Count total number of queries for clients
@@ -325,11 +330,23 @@ int api_stats_database_top_items(struct ftl_conn *api)
 		                       NULL);
 	}
 
-	// Loop over and accumulate results
+	// Bind count limit to prepared statement
+	if((rc = sqlite3_bind_int(stmt, 3, (int)count)) != SQLITE_OK)
+	{
+		log_err("api_stats_database_history(): Failed to bind count (error %d) - %s",
+		        rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		dbclose(&db);
+
+		return send_json_error(api, 500,
+		                       "internal_error",
+		                       "Failed to bind count",
+		                       NULL);
+	}
+
+	// Loop over results (limited by SQL LIMIT :count)
 	cJSON *top_items = JSON_NEW_ARRAY();
-	unsigned int total = 0;
-	while((rc = sqlite3_step(stmt)) == SQLITE_ROW &&
-	       ++total < count)
+	while((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 	{
 		// Get count
 		const int cnt = sqlite3_column_int(stmt, 0);
@@ -474,7 +491,7 @@ int api_history_database_clients(struct ftl_conn *api)
 	if( rc != SQLITE_OK ){
 		log_err("api_stats_database_clients() - SQL error prepare outer (%i): %s",
 		        rc, sqlite3_errstr(rc));
-
+		dbclose(&db);
 		return send_json_error(api, 500,
 		                       "internal_error",
 		                       "Failed to prepare outer statement",
@@ -529,7 +546,7 @@ int api_history_database_clients(struct ftl_conn *api)
 	if( rc != SQLITE_OK ){
 		log_err("api_stats_database_clients() - SQL error prepare (%i): %s",
 		   rc, sqlite3_errstr(rc));
-
+		dbclose(&db);
 		return send_json_error(api, 500,
 		                       "internal_error",
 		                       "Failed to prepare inner statement",
@@ -551,7 +568,7 @@ int api_history_database_clients(struct ftl_conn *api)
 	}
 
 	// Bind from to prepared statement
-	if((rc = sqlite3_bind_int(stmt, 2, from)) != SQLITE_OK)
+	if((rc = sqlite3_bind_double(stmt, 2, from)) != SQLITE_OK)
 	{
 		log_err("api_stats_database_clients(): Failed to bind from (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
@@ -565,7 +582,7 @@ int api_history_database_clients(struct ftl_conn *api)
 	}
 
 	// Bind until to prepared statement
-	if((rc = sqlite3_bind_int(stmt, 3, until)) != SQLITE_OK)
+	if((rc = sqlite3_bind_double(stmt, 3, until)) != SQLITE_OK)
 	{
 		log_err("api_stats_database_clients(): Failed to bind until (error %d) - %s",
 		        rc, sqlite3_errstr(rc));
@@ -580,13 +597,13 @@ int api_history_database_clients(struct ftl_conn *api)
 
 	cJSON *item = NULL;
 	cJSON *data = NULL;
-	unsigned int previous_timeslot = 0u;
+	time_t previous_timeslot = 0u;
 	cJSON *over_time = JSON_NEW_ARRAY();
 	while((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 	{
 		// Get timestamp and derive timeslot from it
-		const unsigned int timestamp = sqlite3_column_int(stmt, 0);
-		const unsigned int timeslot = timestamp - timestamp % interval;
+		const time_t timestamp = sqlite3_column_int64(stmt, 0);
+		const time_t timeslot = timestamp - timestamp % interval;
 		// Begin new array item for each new timeslot
 		if(timeslot != previous_timeslot)
 		{
@@ -652,17 +669,56 @@ int api_stats_database_query_types(struct ftl_conn *api)
 		                       "Failed to open long-term database",
 		                       NULL);
 
-	// Perform SQL queries
+	// Prepare statement once; bind :from and :until once; rebind only
+	// :type per iteration to avoid (TYPE_MAX - TYPE_A) repeated prepares.
+	const char *querystr = "SELECT COUNT(*) FROM query_storage "
+	                       "WHERE timestamp >= :from AND timestamp <= :until "
+	                       "AND type = :type";
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(db, querystr, -1, &stmt, NULL);
+	if(rc != SQLITE_OK)
+	{
+		log_err("api_stats_database_query_types() - SQL error prepare (%i): %s",
+		        rc, sqlite3_errstr(rc));
+		dbclose(&db);
+		return send_json_error(api, 500,
+		                       "internal_error",
+		                       "Failed to prepare statement",
+		                       NULL);
+	}
+
+	// Bind the fixed parameters once before the loop
+	if((rc = sqlite3_bind_double(stmt, 1, from)) != SQLITE_OK ||
+	   (rc = sqlite3_bind_double(stmt, 2, until)) != SQLITE_OK)
+	{
+		log_err("api_stats_database_query_types() - SQL error bind (%i): %s",
+		        rc, sqlite3_errstr(rc));
+		sqlite3_finalize(stmt);
+		dbclose(&db);
+		return send_json_error(api, 500,
+		                       "internal_error",
+		                       "Failed to bind parameters",
+		                       NULL);
+	}
+
 	cJSON *types = JSON_NEW_OBJECT();
 	for(int i = TYPE_A; i < TYPE_MAX; i++)
 	{
-		const char *querystr = "SELECT COUNT(*) FROM query_storage "
-		                       "WHERE timestamp >= :from AND timestamp <= :until "
-		                       "AND type = :type";
 		// Add 1 as type is stored one-based in the database for historical reasons
-		int count = db_query_int_from_until_type(db, querystr, from, until, i+1);
+		if((rc = sqlite3_bind_int(stmt, 3, i + 1)) != SQLITE_OK)
+		{
+			log_err("api_stats_database_query_types() - SQL error bind type (%i): %s",
+			        rc, sqlite3_errstr(rc));
+			break;
+		}
+		int count = 0;
+		if(sqlite3_step(stmt) == SQLITE_ROW)
+			count = sqlite3_column_int(stmt, 0);
+		sqlite3_reset(stmt);
 		JSON_ADD_NUMBER_TO_OBJECT(types, get_query_type_str(i, NULL, NULL), count);
 	}
+
+	sqlite3_finalize(stmt);
 
 	// Close (= unlock) database connection
 	dbclose(&db);
@@ -726,7 +782,7 @@ int api_stats_database_upstreams(struct ftl_conn *api)
 	if( rc != SQLITE_OK ){
 		log_err("api_stats_database_clients() - SQL error prepare (%i): %s",
 		        rc, sqlite3_errstr(rc));
-
+		dbclose(&db);
 		return send_json_error(api, 500,
 		                       "internal_error",
 		                       "Failed to prepare statement",
@@ -816,7 +872,7 @@ int api_stats_database_upstreams(struct ftl_conn *api)
 	statistics = JSON_NEW_OBJECT();
 	JSON_ADD_NUMBER_TO_OBJECT(statistics, "response", 0);
 	JSON_ADD_NUMBER_TO_OBJECT(statistics, "variance", 0);
-	JSON_ADD_ITEM_TO_OBJECT(cached, "statistics", statistics);
+	JSON_ADD_ITEM_TO_OBJECT(blocked, "statistics", statistics);
 	JSON_ADD_ITEM_TO_ARRAY(upstreams, blocked);
 
 	// Close (= unlock) database connection

@@ -10,6 +10,8 @@
 
 #include "FTL.h"
 #include "gc.h"
+// Access to lookup table arrays (clients_lookup, etc.)
+#define LOOKUP_TABLE_PRIVATE
 #include "shmem.h"
 #include "timers.h"
 #include "config/config.h"
@@ -32,7 +34,7 @@
 #include "daemon.h"
 // create_inotify_watcher()
 #include "config/inotify.h"
-// lookup_remove()
+// lookup_find_hash_collisions(), struct lookup_table, lookup table arrays
 #include "lookup-table.h"
 // get_and_clear_event()
 #include "events.h"
@@ -74,68 +76,30 @@ static void recycle(void)
 	const double now = double_time();
 	const double twentyfour_hrs_ago = now - 24*3600;
 
-	// Allocate memory for recycling
-	bool *client_used = calloc(counters->clients, sizeof(bool));
-	bool *domain_used = calloc(counters->domains, sizeof(bool));
-	bool *cache_used = calloc(counters->dns_cache_size, sizeof(bool));
-	if(client_used == NULL || domain_used == NULL || cache_used == NULL)
-	{
-		log_err("Cannot allocate memory for recycling");
-		return;
-	}
-
-	// Find list of client and domain IDs no active query is referencing anymore
-	// and recycle them
-	for(unsigned int queryID = 0; queryID < counters->queries; queryID++)
-	{
-		const queriesData *query = getQuery(queryID, true);
-		if(query == NULL)
-			continue;
-
-		// Mark client and domain as used
-		client_used[query->clientID] = true;
-		domain_used[query->domainID] = true;
-
-		// Mark CNAME domain as used (if any)
-		if(query->CNAME_domainID > -1)
-			domain_used[query->CNAME_domainID] = true;
-
-		// Mark cache entry as used (if any)
-		if(query->cacheID > -1)
-			cache_used[query->cacheID] = true;
-	}
-
-	// Scan cache records for CNAME domain pointers that prevent domains
-	// from being recyclable
-	for(unsigned int cacheID = 0; cacheID < counters->dns_cache_size; cacheID++)
-	{
-		const DNSCacheData *cache = getDNSCache(cacheID, true);
-		if(cache == NULL)
-			continue;
-
-		// Mark domains as used when this is a CNAME-related cache
-		// record
-		if(cache->blocking_status == QUERY_GRAVITY_CNAME ||
-		   cache->blocking_status == QUERY_REGEX_CNAME ||
-		   cache->blocking_status == QUERY_DENYLIST_CNAME)
-		   domain_used[cache->CNAME_domainID] = true;
-	}
-
 	// Recycle clients
+	// A client can be recycled when no active query references it,
+	// which is indicated by client->count == 0 (maintained incrementally
+	// during query creation and GC removal).
+	// We iterate over the lookup table and compact in-place: entries
+	// whose backing data is recycled are dropped, surviving entries are
+	// shifted forward to maintain sorted order for binary search.
 	unsigned int clients_recycled = 0;
-	for(unsigned int clientID = 0; clientID < counters->clients; clientID++)
+	unsigned int cwrite = 0;
+	for(unsigned int i = 0; i < counters->clients_lookup_size; i++)
 	{
-		if(client_used[clientID])
-			continue;
-
+		const unsigned int clientID = clients_lookup[i].id;
 		clientsData *client = getClient(clientID, true);
 		if(client == NULL)
 			continue;
 
+		// Skip if still referenced by at least one query
+		if(client->count > 0)
+			goto keep_client;
+
 		// Never recycle aliasclients (they are not counted above but
 		// are only indirectly referenced by other clients)
 		if(client->flags.aliasclient)
-			continue;
+			goto keep_client;
 
 		if(config.debug.gc.v.b)
 		{
@@ -146,9 +110,6 @@ static void recycle(void)
 			          getstr(client->ippos), clientID, timestring);
 		}
 
-		// Remove client from lookup table
-		lookup_remove(CLIENTS_LOOKUP, clientID, client->hash);
-
 		// Add ID of recycled client to recycle table
 		set_next_recycled_ID(CLIENTS, clientID);
 
@@ -156,25 +117,43 @@ static void recycle(void)
 		memset(client, 0, sizeof(clientsData));
 
 		clients_recycled++;
+		continue;
+
+keep_client:
+		if(cwrite != i)
+			clients_lookup[cwrite] = clients_lookup[i];
+		cwrite++;
+	}
+	if(clients_recycled > 0)
+	{
+		memset(clients_lookup + cwrite, 0,
+		       (counters->clients_lookup_size - cwrite) * sizeof(*clients_lookup));
+		counters->clients_lookup_size = cwrite;
 	}
 
 	// Recycle domains
+	// A domain can be recycled when no active query references it either
+	// directly (domain->count == 0) or via CNAME chain
+	// (domain->cname_refcount == 0), and its last query was > 24h ago.
 	unsigned int domains_recycled = 0;
-	for(unsigned int domainID = 0; domainID < counters->domains; domainID++)
+	unsigned int dwrite = 0;
+	for(unsigned int i = 0; i < counters->domains_lookup_size; i++)
 	{
-		if(domain_used[domainID])
-			continue;
-
+		const unsigned int domainID = domains_lookup[i].id;
 		domainsData *domain = getDomain(domainID, true);
 		if(domain == NULL)
 			continue;
+
+		// Skip if still referenced by any query or CNAME chain
+		if(domain->count > 0 || domain->cname_refcount > 0)
+			goto keep_domain;
 
 		// Only recycle domains when their last query was more than 24
 		// hours ago. This ensures that we do not recycle domains that
 		// have recently been seen but which are not part of any query
 		// (e.g., intermediate domains during CNAME inspection)
 		if(domain->lastQuery > twentyfour_hrs_ago)
-			continue;
+			goto keep_domain;
 
 		if(config.debug.gc.v.b)
 		{
@@ -185,9 +164,6 @@ static void recycle(void)
 			          getstr(domain->domainpos), domainID, timestring);
 		}
 
-		// Remove domain from lookup table
-		lookup_remove(DOMAINS_LOOKUP, domainID, domain->hash);
-
 		// Add ID of recycled domain to recycle table
 		set_next_recycled_ID(DOMAINS, domainID);
 
@@ -195,37 +171,74 @@ static void recycle(void)
 		memset(domain, 0, sizeof(domainsData));
 
 		domains_recycled++;
+		continue;
+
+keep_domain:
+		if(dwrite != i)
+			domains_lookup[dwrite] = domains_lookup[i];
+		dwrite++;
+	}
+	if(domains_recycled > 0)
+	{
+		memset(domains_lookup + dwrite, 0,
+		       (counters->domains_lookup_size - dwrite) * sizeof(*domains_lookup));
+		counters->domains_lookup_size = dwrite;
 	}
 
 	// Recycle cache records
+	// A cache entry can be recycled when no active query references it,
+	// which is indicated by cache->refcount == 0 (maintained
+	// incrementally).
 	unsigned int cache_recycled = 0;
-	for(unsigned int cacheID = 0; cacheID < counters->dns_cache_size; cacheID++)
+	unsigned int kwrite = 0;
+	for(unsigned int i = 0; i < counters->dns_cache_lookup_size; i++)
 	{
-		if(cache_used[cacheID])
-			continue;
-
+		const unsigned int cacheID = dns_cache_lookup[i].id;
 		DNSCacheData *cache = getDNSCache(cacheID, true);
 		if(cache == NULL)
 			continue;
 
+		// Skip if still referenced by at least one query
+		if(cache->refcount > 0)
+			goto keep_cache;
+
+		// If this cache entry held a CNAME domain reference, decrement
+		// that domain's cname_refcount. CNAME_domainID is initialized
+		// to (unsigned int)-1 in findCacheID() and only set to a valid
+		// value when cname_refcount is incremented
+		// (dnsmasq_interface.c, CNAME chain blocking). We check the
+		// sentinel rather than blocking_status because gravity reloads
+		// can reset blocking_status to QUERY_UNKNOWN without clearing
+		// CNAME_domainID.
+		if(cache->CNAME_domainID != (unsigned int)-1)
+		{
+			domainsData *cname_domain = getDomain(cache->CNAME_domainID, true);
+			if(cname_domain != NULL)
+				cname_domain->cname_refcount--;
+		}
+
 		log_debug(DEBUG_GC, "Recycling cache entry with ID %u", cacheID);
 
-		// Remove cache entry from lookup table
-		lookup_remove(DNS_CACHE_LOOKUP, cacheID, cache->hash);
-
-		// Add ID of recycled domain to recycle table
+		// Add ID of recycled cache entry to recycle table
 		set_next_recycled_ID(DNS_CACHE, cacheID);
 
 		// Wipe cache entry's memory
 		memset(cache, 0, sizeof(DNSCacheData));
 
 		cache_recycled++;
-	}
+		continue;
 
-	// Free memory
-	free(client_used);
-	free(domain_used);
-	free(cache_used);
+keep_cache:
+		if(kwrite != i)
+			dns_cache_lookup[kwrite] = dns_cache_lookup[i];
+		kwrite++;
+	}
+	if(cache_recycled > 0)
+	{
+		memset(dns_cache_lookup + kwrite, 0,
+		       (counters->dns_cache_lookup_size - kwrite) * sizeof(*dns_cache_lookup));
+		counters->dns_cache_lookup_size = kwrite;
+	}
 
 	// Scan number of recycled clients, domains, and cache entries if in
 	// debug mode
@@ -463,6 +476,22 @@ void runGC(const time_t now, time_t *lastGCrun, const bool flush)
 				upstream->count--;
 		}
 
+		// Adjust cache refcount
+		if(query->cacheID > -1)
+		{
+			DNSCacheData *cache = getDNSCache(query->cacheID, true);
+			if(cache != NULL)
+				cache->refcount--;
+		}
+
+		// Adjust CNAME domain refcount
+		if(query->CNAME_domainID > -1)
+		{
+			domainsData *cname_domain = getDomain(query->CNAME_domainID, true);
+			if(cname_domain != NULL)
+				cname_domain->cname_refcount--;
+		}
+
 		// Update reply counters
 		counters->reply[query->reply]--;
 		log_debug(DEBUG_STATUS, "reply type %u removed (GC), ID = %d, new count = %u", query->reply, query->id, counters->reply[query->reply]);
@@ -495,47 +524,20 @@ void runGC(const time_t now, time_t *lastGCrun, const bool flush)
 	// Only perform memory operations when we actually removed queries
 	if(removed > 0)
 	{
-		// Move memory forward to keep only what we want
-		// Note: for overlapping memory blocks, memmove() is a safer approach than memcpy()
+		// Instead of memmove-ing all surviving queries to the front
+		// (which copies potentially millions of entries under the SHM lock),
+		// we simply advance the queries_offset. The _getQuery() function
+		// adds this offset when translating logical indices to physical
+		// array positions, so all code transparently sees the correct data.
 		//
-		//  ┌──────────────────────┐
-		//  │ Example: removed = 5 │▒
-		//  │                      │▒
-		//  │ query with ID = 6    │▒
-		//  │ is moved to ID = 0,  │▒
-		//  │ 7 ─> 1, 8 ─> 2, etc. │▒
-		//  │                      │▒
-		//  │ ID:         111111   │▒
-		//  │   0123456789012345   │▒
-		//  │                      │▒
-		//  │   ......QQQQ------   │▒
-		//  │         vvvv         │▒
-		//  │   ┌─────┘│││         │▒
-		//  │   │┌─────┘││         │▒
-		//  │   ││┌─────┘│         │▒
-		//  │   │││┌─────┘         │▒
-		//  │   vvvv               │▒
-		//  │   QQQQ------------   │▒
-		//  └──────────────────────┘▒
-		//    ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
-		//
-		// Legend: . = removed queries, Q = valid queries, - = free space
-		//
-		// We move the memory block starting at the first valid query (index 5) to the
-		// beginning of the memory block, overwriting the invalid queries (index 0-4).
-		// The remaining memory (index 5-15) is then zeroed out by memset() below.
-		queriesData *dest = getQuery(0, true);
-		queriesData *src = getQuery(removed, true);
-		if(dest != NULL && src != NULL)
-			memmove(dest, src, (counters->queries - removed)*sizeof(queriesData));
-
-		// Update queries counter
+		// Dead space at the front [0..offset-1] is reclaimed lazily:
+		// shm_ensure_size() compacts (memmove + reset offset) only when
+		// the physical array actually runs out of room.
+		counters->queries_offset += removed;
 		counters->queries -= removed;
 
-		// Ensure remaining memory is zeroed out (marked as "F" in the above example)
-		queriesData *tail = getQuery(counters->queries, true);
-		if(tail)
-			memset(tail, 0, (counters->queries_MAX - counters->queries)*sizeof(queriesData));
+		// Invalidate the query ID cache since all logical indices shifted
+		queryIDMap_clear();
 	}
 
 	// Recycle old clients and domains

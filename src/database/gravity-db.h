@@ -44,6 +44,7 @@ typedef struct {
 bool gravityDB_reopen(void);
 void gravityDB_forked(void);
 void gravityDB_reload_groups(clientsData *client);
+void gravityDB_recheck_clients(void);
 bool gravityDB_prepare_client_statements(clientsData *client);
 void gravityDB_close(void);
 bool gravityDB_getTable(unsigned char list);
@@ -56,7 +57,20 @@ void check_restored_gravity(void);
 bool gravity_updated(void);
 
 cJSON *gen_abp_patterns(const char *domain);
-enum db_result in_gravity(const char *domain, cJSON *abp_patterns, clientsData *client, const bool antigravity, int *domain_id);
+
+// Stack-based ABP pattern structure used on the hot query path to avoid
+// heap-allocating a cJSON array per cache-miss query. Only the suffix start
+// offsets into the original domain are stored; the actual ABP strings are built
+// on the fly right before the SQLite bind call.
+#define ABP_MAX_SUFFIXES 128
+struct abp_patterns {
+	unsigned int offsets[ABP_MAX_SUFFIXES];
+	unsigned int lengths[ABP_MAX_SUFFIXES];
+	unsigned int count;
+	bool generated;
+};
+
+enum db_result in_gravity(const char *domain, struct abp_patterns *abp, clientsData *client, const bool antigravity, int *domain_id);
 enum db_result in_denylist(const char *domain, DNSCacheData *dns_cache, clientsData *client);
 enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clientsData *client);
 
@@ -76,5 +90,7 @@ bool gravityDB_edit_groups(const enum gravity_list_type listtype, cJSON *groups,
                            const tablerow *row, const char **message);
 
 time_t gravity_last_updated(void) __attribute__((pure));
+
+void gravityDB_dump_perf_stats(void);
 
 #endif //GRAVITY_H

@@ -467,7 +467,7 @@ const char *readFTLlegacy(struct config *conf)
 	// defaults to: not set
 	struct in6_addr reply_addr6;
 	buffer = parseFTLconf(fp, "REPLY_ADDR6");
-	if(buffer != NULL && strlen(buffer) > 0 &&  inet_pton(AF_INET, buffer, &reply_addr6))
+	if(buffer != NULL && strlen(buffer) > 0 &&  inet_pton(AF_INET6, buffer, &reply_addr6))
 	{
 		if(conf->dns.reply.host.force6.v.b || conf->dns.reply.blocking.force6.v.b)
 		{

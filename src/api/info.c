@@ -132,7 +132,7 @@ int api_info_database(struct ftl_conn *api)
 
 	cJSON *group = JSON_NEW_OBJECT();
 	JSON_ADD_NUMBER_TO_OBJECT(group, "gid", st.st_gid); // GID
-	const struct group *gr = getgrgid(st.st_uid);
+	const struct group *gr = getgrgid(st.st_gid);
 	if(gr != NULL)
 	{
 		JSON_COPY_STR_TO_OBJECT(group, "name", gr->gr_name); // Group name
@@ -560,6 +560,7 @@ static int get_ftl_obj(struct ftl_conn *api, cJSON *ftl)
 	// Source from shared objects within lock
 	lock_shm();
 	const int db_gravity = counters->database.gravity;
+	const int db_antigravity = counters->database.antigravity;
 	const int db_groups = counters->database.groups;
 	const int db_lists = counters->database.lists;
 	const int db_clients = counters->database.clients;
@@ -590,6 +591,7 @@ static int get_ftl_obj(struct ftl_conn *api, cJSON *ftl)
 	unlock_shm();
 
 	JSON_ADD_NUMBER_TO_OBJECT(database, "gravity", db_gravity);
+	JSON_ADD_NUMBER_TO_OBJECT(database, "antigravity", db_antigravity);
 	JSON_ADD_NUMBER_TO_OBJECT(database, "groups", db_groups);
 	JSON_ADD_NUMBER_TO_OBJECT(database, "lists", db_lists);
 	JSON_ADD_NUMBER_TO_OBJECT(database, "clients", db_clients);

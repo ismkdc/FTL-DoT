@@ -48,7 +48,7 @@ int api_padd(struct ftl_conn *api)
 	if(config.misc.privacylevel.v.privacy_level < PRIVACY_HIDE_DOMAINS)
 	{
 		// Find most recently blocked query
-		for(int queryID = counters->queries - 1; queryID > 0 ; queryID--)
+		for(int queryID = counters->queries - 1; queryID >= 0 ; queryID--)
 		{
 			const queriesData *query = getQuery(queryID, true);
 			if(query == NULL)
@@ -98,6 +98,7 @@ int api_padd(struct ftl_conn *api)
 		const char *domain = cJSON_GetStringValue(top_block);
 		JSON_COPY_STR_TO_OBJECT(json, "top_blocked", domain);
 	}
+	cJSON_Delete(top_blocked);
 	cJSON *top_clients = get_top_clients(api, 1, false, true, false, true);
 	if(cJSON_GetArraySize(top_clients) == 0)
 	{
@@ -109,6 +110,7 @@ int api_padd(struct ftl_conn *api)
 		const char *client = cJSON_GetStringValue(top_client);
 		JSON_COPY_STR_TO_OBJECT(json, "top_client", client);
 	}
+	cJSON_Delete(top_clients);
 
 	// Add a null entry if the domain is hidden or there is no recent
 	// blocked domain (e.g. when blocking is disabled)

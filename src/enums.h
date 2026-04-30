@@ -21,6 +21,7 @@ enum memory_type {
 	CLIENTS_LOOKUP,
 	DOMAINS_LOOKUP,
 	DNS_CACHE_LOOKUP,
+	INTARRAYS,
 } __attribute__ ((packed));
 
 enum dnssec_status {
@@ -157,6 +158,7 @@ enum debug_flag {
 	DEBUG_NTP,
 	DEBUG_NETLINK,
 	DEBUG_TIMING,
+	DEBUG_PERFORMANCE,
 	DEBUG_MAX
 } __attribute__ ((packed));
 
@@ -193,6 +195,7 @@ enum gravity_list_type {
 
 enum gravity_tables {
 	GRAVITY_TABLE,
+	ANTIGRAVITY_TABLE,
 	EXACT_DENY_TABLE,
 	EXACT_ALLOW_TABLE,
 	REGEX_DENY_TABLE,
@@ -289,7 +292,8 @@ enum ptr_type {
 
 enum addinfo_type {
 	ADDINFO_CNAME_DOMAIN = 1,
-	ADDINFO_LIST_ID
+	ADDINFO_LIST_ID,
+	ADDINFO_TYPE_MAX
 } __attribute__ ((packed));
 
 enum listening_mode {
