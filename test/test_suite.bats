@@ -284,7 +284,6 @@ bats::on_failure() {
   run bash -c "dig CNAME cname-ok.ftl @127.0.0.1 +short"
   assert_line --index 0 "a.ftl."
   assert_line --index 1 ""
-
 }
 
 @test "Local DNS test: SRV srv.ftl" {
@@ -1568,7 +1567,6 @@ bats::on_failure() {
   run bash -c './pihole-FTL --config dns.hosts "[\"111.222.333.444 abc\"]"'
   assert_line --index 0 'Invalid value: dns.hosts[0]: neither a valid IPv4 nor IPv6 address ("111.222.333.444")'
   assert_failure 3
-
 
   run bash -c './pihole-FTL --config dns.hosts "[\"1.1.1.1 cf\",\"8.8.8.8 google\",\"1.2.3.4\"]"'
   assert_line --index 0 'Invalid value: dns.hosts[2]: entry does not have at least one hostname ("1.2.3.4")'
