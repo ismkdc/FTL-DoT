@@ -47,7 +47,7 @@ static union all_addr del_addr;
 
 #if defined(HAVE_BSD_NETWORK) && !defined(__APPLE__)
 
-int arp_enumerate(void *parm, callback_t callback)
+static int arp_enumerate(void *parm, callback_t callback)
 {
   int mib[6];
   size_t needed;
@@ -55,11 +55,8 @@ int arp_enumerate(void *parm, callback_t callback)
   struct rt_msghdr *rtm;
   struct sockaddr_inarp *sin2;
   struct sockaddr_dl *sdl;
-  struct iovec buff;
+  static struct iovec buff;
   int rc;
-
-  buff.iov_base = NULL;
-  buff.iov_len = 0;
 
   mib[0] = CTL_NET;
   mib[1] = PF_ROUTE;
