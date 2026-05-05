@@ -19,6 +19,8 @@
 // TOTP+HMAC
 #include <nettle/hmac.h>
 #include <nettle/sha1.h>
+// pthread_mutex_t
+#include <pthread.h>
 
 static uint32_t hotp(const uint8_t *key, size_t key_len, const uint64_t counter, const uint8_t digits)
 {
@@ -197,18 +199,27 @@ static bool encode_uint8_t_array_to_base32(const uint8_t *in, const size_t in_le
 
 static time_t last_attempt = 0;
 static uint32_t last_code = 0;
+static pthread_mutex_t totp_lock = PTHREAD_MUTEX_INITIALIZER;
 enum totp_status verifyTOTP(const uint32_t incode)
 {
+	pthread_mutex_lock(&totp_lock);
+
 	// Only one attempt per second is allowed
 	const time_t now = time(NULL);
 	if(now == last_attempt)
+	{
+		pthread_mutex_unlock(&totp_lock);
 		return TOTP_RATE_LIMIT;
+	}
 	last_attempt = now;
 
 	// Decode base32 secret
 	uint8_t decoded_secret[RFC6238_SECRET_LEN];
 	if(!decode_base32_to_uint8_array(config.webserver.api.totp_secret.v.s, decoded_secret, sizeof(decoded_secret)))
+	{
+		pthread_mutex_unlock(&totp_lock);
 		return false;
+	}
 
 	// Verify code for the previous, the current and the next time step
 	for(int i = -1; i <= 1; i++)
@@ -230,15 +241,18 @@ enum totp_status verifyTOTP(const uint32_t incode)
 			{
 				log_warn("2FA code has already been used (%i, %u), please wait %lu seconds",
 				         i, gencode, (unsigned long)(RFC6238_X - (now % RFC6238_X)));
+				pthread_mutex_unlock(&totp_lock);
 				return TOTP_REUSED;
 			}
 			const char *which = i == -1 ? "previous" : i == 0 ? "current" : "next";
 			log_debug(DEBUG_API, "2FA code from %s time step is valid", which);
 			last_code = gencode;
+			pthread_mutex_unlock(&totp_lock);
 			return TOTP_CORRECT;
 		}
 	}
 
+	pthread_mutex_unlock(&totp_lock);
 	return TOTP_INVALID;
 }
 
