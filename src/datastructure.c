@@ -39,9 +39,25 @@ void strtolower(char *str)
 		*str = tolower(*str);
 }
 
+// copies src to dst while converting to lower case, ensuring null-termination
+// and avoiding buffer overflows
+void strcpy_tolower(char *dst, const char *src, size_t dstsize)
+{
+	const char *end = dst + dstsize - 1;
+	for(; *src && dst < end; ++src, ++dst)
+		// DNS domain names are pure ASCII. Use a branchless bit-trick
+		// instead of the locale-aware tolower() from <ctype.h>, which
+		// on glibc involves a two-pointer-dereference table lookup and
+		// on musl may be an actual function call. The '| 0x20' trick
+		// converts uppercase A-Z to lowercase a-z by setting bit 5;
+		// for all other ASCII characters the result is identical.
+		*dst = (*src >= 'A' && *src <= 'Z') ? (*src | 0x20) : *src;
+	*dst = '\0';
+}
+
 /**
- * @brief Computes a hash value for a given string using Jenkins' One-at-a-Time
- * hash algorithm.
+ * @brief Computes a hash value for a given string using the FNV-1a hash
+ * algorithm.
  *
  * This function is marked as pure, indicating that it has no side effects and
  * its return value depends only on the input parameters.
@@ -49,26 +65,25 @@ void strtolower(char *str)
  * @param s The input string to be hashed.
  * @return The computed hash value as a 32-bit unsigned integer.
  *
- * @note Jenkins' One-at-a-Time hash is a simple and effective hash function for
- *       strings. More details can be found at:
- *       http://www.burtleburtle.net/bob/hash/doobs.html
+ * @note FNV-1a (Fowler-Noll-Vo) is a non-cryptographic hash function with good
+ *       distribution for short ASCII strings such as domain names and IP
+ *       addresses. It uses 2 dependent operations per byte (xor + multiply)
+ *       with no finalization step, making it faster than Jenkins' One-at-a-Time
+ *       (3 ops/byte + 3-op finalization) for the typical input lengths seen in
+ *       DNS resolution. More details can be found at:
+ *       http://www.isthe.com/chongo/tech/comp/fnv/
  */
-static uint32_t __attribute__ ((pure)) hashStr(const char *s)
+uint32_t __attribute__ ((pure)) hashStr(const char *s)
 {
-	// Jenkins' One-at-a-Time hash (optimized version)
-	// (http://www.burtleburtle.net/bob/hash/doobs.html)
-	uint32_t hash = 0;
+	// FNV-1a hash: XOR each byte into the hash, then multiply by the FNV
+	// prime. The offset basis and prime are defined by the FNV specification
+	// for 32-bit hashes.
+	uint32_t hash = 2166136261u; // FNV offset basis
 	for(; *s; ++s)
 	{
-		hash += *s;
-		hash += hash << 10;
-		hash ^= hash >> 6;
+		hash ^= (unsigned char)*s;
+		hash *= 16777619u; // FNV prime
 	}
-
-	// Final mixing to ensure good distribution
-	hash += hash << 3;
-	hash ^= hash >> 11;
-	hash += hash << 15;
 	return hash;
 }
 
@@ -112,15 +127,49 @@ static uint32_t __attribute__ ((pure)) hashCacheIDs(const unsigned int domainID,
 	return (((uint32_t)domainID) << 16) ^ ((uint32_t)(clientID) << 5) ^ query_type;
 }
 
+// Process-local direct-mapped cache: dnsmasq query ID -> query index
+// Provides O(1) lookup in findQueryID() instead of O(MAXITER) linear scan.
+// Since dnsmasq IDs are an incrementing counter, a direct-mapped cache works
+// perfectly: each new ID naturally evicts the oldest entry at its slot, giving
+// a sliding window of the last QUERY_ID_MAP_SIZE IDs. Cleared after GC memmove
+// (which shifts all query indices).
+#define QUERY_ID_MAP_SIZE 4096u  // Must be power of 2
+#define QUERY_ID_MAP_MASK (QUERY_ID_MAP_SIZE - 1u)
+
+static struct {
+	int dnsmasq_id;
+	int query_index;
+} query_id_map[QUERY_ID_MAP_SIZE];
+
+void queryIDMap_insert(const int dnsmasq_id, const int query_index)
+{
+	const unsigned int slot = (unsigned int)dnsmasq_id & QUERY_ID_MAP_MASK;
+	query_id_map[slot].dnsmasq_id = dnsmasq_id;
+	query_id_map[slot].query_index = query_index;
+}
+
+void queryIDMap_clear(void)
+{
+	memset(query_id_map, 0, sizeof(query_id_map));
+}
+
 int findQueryID(const int id)
 {
-	// Loop over all queries - we loop in reverse order (start from the most recent query and
-	// continuously walk older queries while trying to find a match. Ideally, we should always
-	// find the correct query with zero iterations, but it may happen that queries are processed
-	// asynchronously, e.g. for slow upstream relies to a huge amount of requests.
-	// We iterate from the most recent query down to at most MAXITER queries in the past to avoid
-	// iterating through the entire array of queries
-	// MAX(0, a) is used to return 0 in case a is negative (negative array indices are harmful)
+	// Try O(1) direct-mapped cache lookup
+	const unsigned int slot = (unsigned int)id & QUERY_ID_MAP_MASK;
+	if(query_id_map[slot].dnsmasq_id == id)
+	{
+		const int qi = query_id_map[slot].query_index;
+		// Validate against shared memory (index may be stale after GC)
+		if(qi >= 0 && qi < (int)counters->queries)
+		{
+			const queriesData *query = getQuery(qi, true);
+			if(query != NULL && query->id == id)
+				return qi;
+		}
+	}
+
+	// Fallback: reverse linear scan up to MAXITER queries
 	const unsigned int until = counters->queries > MAXITER ? counters->queries - MAXITER : 0;
 	const unsigned int start = counters->queries > 0 ? counters->queries - 1 : 0;
 
@@ -263,6 +312,8 @@ int _findDomainID(const char *domainString, const bool count, int line, const ch
 
 	// Set magic byte
 	domain->magic = MAGICBYTE;
+	// Set ID
+	domain->id = domainID;
 	// Set its counter to 1 only if this domain is to be counted
 	// Domains only encountered during CNAME inspection are NOT counted here
 	domain->count = count ? 1 : 0;
@@ -451,6 +502,8 @@ void change_clientcount(clientsData *client, const int total, const int blocked,
 		if(client->aliasclient_id > -1)
 		{
 			clientsData *aliasclient = getClient(client->aliasclient_id, true);
+			if(aliasclient == NULL)
+				return;
 			aliasclient->count += total;
 			aliasclient->blockedcount += blocked;
 			if(overTimeIdx > -1 && (unsigned int)overTimeIdx < OVERTIME_SLOTS)
@@ -535,6 +588,7 @@ int _findCacheID(const unsigned int domainID, const unsigned int clientID, const
 	dns_cache->clientID = clientID;
 	dns_cache->query_type = query_type;
 	dns_cache->force_reply = 0u;
+	dns_cache->CNAME_domainID = (unsigned int)-1; // not set
 	dns_cache->list_id = -1; // -1 = not set
 
 	// Increase counter by one
@@ -685,6 +739,7 @@ void FTL_reload_all_domainlists(void)
 
 	// Get size of gravity, number of domains, groups, clients, and lists
 	counters->database.gravity = gravityDB_count(GRAVITY_TABLE, false);
+	counters->database.antigravity = gravityDB_count(ANTIGRAVITY_TABLE, false);
 	counters->database.groups = gravityDB_count(GROUPS_TABLE, false);
 	counters->database.clients = gravityDB_count(CLIENTS_TABLE, false);
 	counters->database.lists = gravityDB_count(ADLISTS_TABLE, false);
@@ -1254,7 +1309,7 @@ void _query_set_status(queriesData *query, const enum query_status new_status, c
 	   new_status != QUERY_RETRIED &&
 	   new_status != QUERY_RETRIED_DNSSEC)
 	{
-		const unsigned int cacheID = query->cacheID > 0 ? query->cacheID : findCacheID(query->domainID, query->clientID, query->type, true);
+		const unsigned int cacheID = query->cacheID > -1 ? query->cacheID : findCacheID(query->domainID, query->clientID, query->type, true);
 		DNSCacheData *dns_cache = getDNSCache(cacheID, true);
 		if(dns_cache != NULL && dns_cache->blocking_status != new_status)
 		{
@@ -1272,7 +1327,7 @@ void _query_set_status(queriesData *query, const enum query_status new_status, c
 			    new_status == QUERY_EXTERNAL_BLOCKED_EDE15))
 			{
 				// Set expiration time for this cache entry
-				dns_cache->expires = time(NULL) + config.dns.cache.upstreamBlockedTTL.v.ui;
+				dns_cache->expires = ABS_TO_SHM_TIME((time_t)query->timestamp + config.dns.cache.upstreamBlockedTTL.v.ui);
 			}
 
 			if(config.debug.queries.v.b)
@@ -1287,7 +1342,7 @@ void _query_set_status(queriesData *query, const enum query_status new_status, c
 				{
 					log_debug(DEBUG_QUERIES, "DNS cache: %s/%s/%s -> %s, expires in %lis",
 					          qtype, clientstr, domain, statusstr,
-					          (long)(dns_cache->expires - time(NULL)));
+					          (long)(SHM_TO_ABS_TIME(dns_cache->expires) - time(NULL)));
 				}
 				else
 				{
@@ -1302,7 +1357,7 @@ void _query_set_status(queriesData *query, const enum query_status new_status, c
 	if(!init)
 	{
 		counters->status[old_status]--;
-		log_debug(DEBUG_STATUS, "status %d removed (!init), ID = %d, new count = %u", QUERY_UNKNOWN, query->id, counters->status[QUERY_UNKNOWN]);
+		log_debug(DEBUG_STATUS, "status %d removed (!init), ID = %d, new count = %u", old_status, query->id, counters->status[old_status]);
 	}
 	counters->status[new_status]++;
 	log_debug(DEBUG_STATUS, "status %d set, ID = %d, new count = %u", new_status, query->id, counters->status[new_status]);

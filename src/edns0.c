@@ -168,7 +168,7 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 //      level of the responder.  In this way, a requestor will learn the
 //      implementation level of a responder as a side effect of every
 //      response, including error responses and including RCODE=BADVERS.
-	unsigned char edns0_version = (ttl >> 16) % 0xFF;
+	unsigned char edns0_version = (ttl >> 16) & 0xFF;
 	if(edns0_version != 0x00)
 		return;
 
@@ -286,27 +286,28 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 		else if(code == EDNS0_COOKIE && optlen >= 16 && optlen <= 40)
 		{
 			// EDNS(0) COOKIE client + server
-			unsigned char client_cookie[8];
-			memcpy(client_cookie, p, 8);
-
-			unsigned short server_cookie_len = optlen - 8;
-			unsigned char *server_cookie = calloc(server_cookie_len, sizeof(unsigned char));
-			memcpy(server_cookie, p + 8u, server_cookie_len);
 			if(config.debug.edns0.v.b)
 			{
+				unsigned char client_cookie[8];
+				memcpy(client_cookie, p, 8);
+
+				const unsigned short server_cookie_len = optlen - 8;
+				// Server cookie is at most 32 bytes (optlen max 40 - 8)
+				unsigned char server_cookie[32];
+				memcpy(server_cookie, p + 8u, server_cookie_len);
+
 				char pretty_client_cookie[8*2 + 1]; // client: fixed length
 				char *pp = pretty_client_cookie;
 				for(unsigned int j = 0; j < 8; j++)
 					pp += sprintf(pp, "%02X", client_cookie[j]);
-				char *pretty_server_cookie = calloc(server_cookie_len*2 + 1u, sizeof(char)); // server: variable length
+				// Server cookie hex: at most 32*2 + 1 = 65 bytes
+				char pretty_server_cookie[32*2 + 1];
 				pp = pretty_server_cookie;
 				for(unsigned int j = 0; j < server_cookie_len; j++)
 					pp += sprintf(pp, "%02X", server_cookie[j]);
 				log_debug(DEBUG_EDNS0, "COOKIE (client + server): %s (client), %s (server, %u bytes)",
 				     pretty_client_cookie, pretty_server_cookie, server_cookie_len);
-				free(pretty_server_cookie);
 			}
-			free(server_cookie);
 
 			// Advance working pointer
 			p += optlen;
@@ -389,7 +390,7 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 			//   2: |                           OPTION-LENGTH                       |
 			//      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 			//   4: | INFO-CODE                                                     |
-			edns.ede = ntohs(((int)p[1] << 8) | p[0]);
+			edns.ede = (p[0] << 8) | p[1];
 			//      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 			//   6: / EXTRA-TEXT ...                                                /
 			//      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+

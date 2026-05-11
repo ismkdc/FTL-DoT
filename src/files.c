@@ -491,22 +491,44 @@ void rotate_files(const char *path, char **first_file)
 	{
 		// Construct old and new paths
 		char *fname = strdup(path);
+		if(fname == NULL)
+		{
+			log_err("rotate_files(): strdup() failed: %s", strerror(errno));
+			return;
+		}
 		const char *filename = basename(fname);
 		// extra 6 bytes is enough space for up to 999 rotations ("/", ".", "\0", "999")
 		const size_t buflen = strlen(filename) + MAX(strlen(BACKUP_DIR), strlen(path)) + 6;
 		char *old_path = calloc(buflen, sizeof(char));
+		if(old_path == NULL)
+		{
+			log_err("rotate_files(): calloc() failed: %s", strerror(errno));
+			free(fname);
+			return;
+		}
 		if(i == 1)
 			snprintf(old_path, buflen, "%s", path);
 		else
 			snprintf(old_path, buflen, BACKUP_DIR"/%s.%u", filename, i-1);
 		char *new_path = calloc(buflen, sizeof(char));
+		if(new_path == NULL)
+		{
+			log_err("rotate_files(): calloc() failed: %s", strerror(errno));
+			free(fname);
+			free(old_path);
+			return;
+		}
 		snprintf(new_path, buflen, BACKUP_DIR"/%s.%u", filename, i);
 		free(fname);
 
 		// If this is the first file, export the path to the caller (if
 		// requested)
 		if(i == 1 && first_file != NULL)
+		{
 			*first_file = strdup(new_path);
+			if(*first_file == NULL)
+				log_err("rotate_files(): strdup() failed: %s", strerror(errno));
+		}
 
 		if(file_exists(old_path))
 		{
@@ -838,7 +860,7 @@ enum verify_result verify_FTL(bool verbose)
 	if(!sha256sum(filename, checksum, true))
 	{
 		log_err("Failed to calculate SHA256 checksum of %s", filename);
-		return false;
+		return VERIFY_ERROR;
 	}
 
 	// Compare the checksums

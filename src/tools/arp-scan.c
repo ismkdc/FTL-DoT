@@ -271,9 +271,13 @@ static void add_result(struct in_addr *rcv_ip, unsigned char *sender_mac,
 	}
 
 	// Memorize that we have received a reply for this IP address
-	thread_data->extreme ?
-	  thread_data->result_extreme[i].device[j].replied[scan_id]++ :
-	  thread_data->result[i].device[j].replied[scan_id]++;
+	// (only if we found a valid slot, j == MAX_MACS means all slots were full)
+	if(j < MAX_MACS)
+	{
+		thread_data->extreme ?
+		  thread_data->result_extreme[i].device[j].replied[scan_id]++ :
+		  thread_data->result[i].device[j].replied[scan_id]++;
+	}
 }
 
 // Read all ARP responses

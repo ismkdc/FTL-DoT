@@ -1895,8 +1895,9 @@ void receive_query(struct listener *listen, time_t now)
     have_mark = get_incoming_mark(&source_addr, &dst_addr, /* istcp: */ 0, &mark);
 #endif
   //********************** Pi-hole modification **********************//
-  pheader = find_pseudoheader(header, (size_t)n, NULL, &pheader, NULL, NULL);
-  FTL_parse_pseudoheaders(pheader, (size_t)n);
+  { size_t phlen = 0;
+    pheader = find_pseudoheader(header, (size_t)n, &phlen, NULL, NULL, NULL);
+    FTL_parse_pseudoheaders(pheader, phlen); }
   //******************************************************************//
 
   if (OPCODE(header) != QUERY)
@@ -2605,8 +2606,9 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 	  daemon->log_source_addr = &peer_addr;
 
 	  //********************** Pi-hole modification **********************//
-	  pheader = find_pseudoheader(header, (size_t)size, NULL, &pheader, NULL, NULL);
-	  FTL_parse_pseudoheaders(pheader, (size_t)size);
+	  { size_t phlen = 0;
+	    pheader = find_pseudoheader(header, (size_t)size, &phlen, NULL, NULL, NULL);
+	    FTL_parse_pseudoheaders(pheader, phlen); }
 	  //******************************************************************//
 	  
 	  if (OPCODE(header) != QUERY)

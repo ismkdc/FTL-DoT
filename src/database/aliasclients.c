@@ -37,6 +37,7 @@ bool create_aliasclients_table(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 9))
 	{
 		log_err("create_aliasclients_table(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -51,6 +52,8 @@ bool create_aliasclients_table(sqlite3 *db)
 static void recompute_aliasclient(const int aliasclientID)
 {
 	clientsData *aliasclient = getClient(aliasclientID, true);
+	if(aliasclient == NULL)
+		return;
 
 	log_debug(DEBUG_ALIASCLIENTS, "Recomputing alias-client \"%s\" (%s)...",
 	          getstr(aliasclient->namepos), getstr(aliasclient->ippos));
@@ -244,7 +247,10 @@ void reset_aliasclient(sqlite3 *db, clientsData *client)
 
 	// Skip alias-clients themselves
 	if(client->flags.aliasclient)
+	{
+		if(db_opened) dbclose(&db);
 		return;
+	}
 
 	// Find corresponding alias-client (if any)
 	client->aliasclient_id = get_aliasclient_ID(db, client);

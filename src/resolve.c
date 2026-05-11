@@ -235,8 +235,10 @@ bool __attribute__((pure)) resolve_names(void)
 // Return if we want to resolve this type of address to a name
 bool __attribute__((pure)) resolve_this_name(const char *ipaddr)
 {
-	if(!config.resolver.resolveIPv4.v.b ||
-	  (!config.resolver.resolveIPv6.v.b && strstr(ipaddr,":") != NULL))
+	const bool is_ipv6 = strstr(ipaddr, ":") != NULL;
+	if(!config.resolver.resolveIPv4.v.b && !is_ipv6)
+		return false;
+	if(!config.resolver.resolveIPv6.v.b && is_ipv6)
 		return false;
 	return true;
 }
@@ -964,7 +966,15 @@ static void resolveClients(const bool onlynew, const bool force_refreshing)
 
 		// else:
 		// Store obtained host name (may be unchanged)
-		client->namepos = newnamepos;
+		if(client->namepos != newnamepos)
+		{
+			client->namepos = newnamepos;
+			// Reset in_database flag and cached row ID so the new
+			// (ip, name) pair gets inserted as a new record into
+			// client_by_id on the next batch insertion of queries
+			client->flags.in_database = false;
+			client->db_id = 0;
+		}
 		// Mark entry as not new
 		client->flags.new = false;
 

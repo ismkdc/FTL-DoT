@@ -745,7 +745,7 @@ void parse_args(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 		const long initial_filesize = (argc == 6) ? (long)atol(argv[5]) : -1;
-		if(argc == 5 && initial_filesize < 0)
+		if(argc == 6 && initial_filesize < 0)
 		{
 			fprintf(stderr, "Error: Optional initial file size must be a non-negative integer if specified.\n");
 			exit(EXIT_FAILURE);

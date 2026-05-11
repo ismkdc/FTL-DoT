@@ -188,21 +188,12 @@ setup() {
   run bash -c "grep -c \"Gravity database: Client aa:bb:cc:dd:ee:ff found. Using groups (4)\" /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.4: \"SELECT id from vw_regex_denylist WHERE group_id IN (4);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.4 (groups: 4)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.4: \"SELECT id from vw_regex_allowlist WHERE group_id IN (4);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.4 (groups: 4)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_allowlist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_denylist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT adlist_id from vw_gravity WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
   run bash -c "grep -c 'Regex allow ([[:digit:]]*, DB ID [[:digit:]]*) .* NOT ENABLED for client 127.0.0.4' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "2" ]]
@@ -226,21 +217,12 @@ setup() {
   run bash -c "grep -c \"Gravity database: Client aa:bb:cc:dd:ee:ff found. Using groups (4)\" /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.5: \"SELECT id from vw_regex_denylist WHERE group_id IN (4);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.5 (groups: 4)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.5: \"SELECT id from vw_regex_allowlist WHERE group_id IN (4);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.5 (groups: 4)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_allowlist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_denylist WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT adlist_id from vw_gravity WHERE domain = ? AND group_id IN (4);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} != "0" ]]
   run bash -c "grep -c 'Regex allow ([[:digit:]]*, DB ID [[:digit:]]*) .* NOT ENABLED for client 127.0.0.5' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "2" ]]
@@ -270,19 +252,10 @@ setup() {
   run bash -c "grep -c \"Gravity database: Client 00:11:22:33:44:55 found (identified by interface enp0s123). Using groups (5)\" /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.6: \"SELECT id from vw_regex_denylist WHERE group_id IN (5);\"' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex deny: Querying associated regexes for client 127.0.0.6 (groups: 5)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.6: \"SELECT id from vw_regex_allowlist WHERE group_id IN (5);\"' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_allowlist WHERE domain = ? AND group_id IN (5);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT id from vw_denylist WHERE domain = ? AND group_id IN (5);' /var/log/pihole/FTL.log"
-  printf "%s\n" "${lines[@]}"
-  [[ ${lines[0]} == "1" ]]
-  run bash -c "grep -c 'build_client_querystr: SELECT adlist_id from vw_gravity WHERE domain = ? AND group_id IN (5);' /var/log/pihole/FTL.log"
+  run bash -c "grep -c 'Regex allow: Querying associated regexes for client 127.0.0.6 (groups: 5)' /var/log/pihole/FTL.log"
   printf "%s\n" "${lines[@]}"
   [[ ${lines[0]} == "1" ]]
   run bash -c "grep -c 'Regex allow ([[:digit:]]*, DB ID [[:digit:]]*) .* NOT ENABLED for client 127.0.0.6' /var/log/pihole/FTL.log"
@@ -715,9 +688,9 @@ setup() {
   [[ "${lines[@]}" == *"CREATE TABLE IF NOT EXISTS \"network\" (id INTEGER PRIMARY KEY NOT NULL, hwaddr TEXT UNIQUE NOT NULL, interface TEXT NOT NULL, firstSeen INTEGER NOT NULL, lastQuery INTEGER NOT NULL, numQueries INTEGER NOT NULL, macVendor TEXT, aliasclient_id INTEGER);"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE IF NOT EXISTS \"network_addresses\" (network_id INTEGER NOT NULL, ip TEXT UNIQUE NOT NULL, lastSeen INTEGER NOT NULL DEFAULT (cast(strftime('%s', 'now') as int)), name TEXT, nameUpdated INTEGER, FOREIGN KEY(network_id) REFERENCES network(id));"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE aliasclient (id INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, comment TEXT);"* ]]
-  [[ "${lines[@]}" == *"INSERT INTO ftl VALUES(0,21,'Database version');"* ]]
+  [[ "${lines[@]}" == *"INSERT INTO ftl VALUES(0,22,'Database version');"* ]]
   # vvv This has been added in version 10 vvv
-  [[ "${lines[@]}" == *"CREATE VIEW queries AS SELECT id, timestamp, type, status, CASE typeof(domain) WHEN 'integer' THEN (SELECT domain FROM domain_by_id d WHERE d.id = q.domain) ELSE domain END domain,CASE typeof(client) WHEN 'integer' THEN (SELECT ip FROM client_by_id c WHERE c.id = q.client) ELSE client END client,CASE typeof(forward) WHEN 'integer' THEN (SELECT forward FROM forward_by_id f WHERE f.id = q.forward) ELSE forward END forward,CASE typeof(additional_info) WHEN 'integer' THEN (SELECT content FROM addinfo_by_id a WHERE a.id = q.additional_info) ELSE additional_info END additional_info, reply_type, reply_time, dnssec, list_id, ede FROM query_storage q;"* ]]
+  [[ "${lines[@]}" == *"CREATE VIEW queries AS SELECT q.id, q.timestamp, q.type, q.status, COALESCE(d.domain, q.domain) AS domain, COALESCE(c.ip, q.client) AS client, COALESCE(f.forward, q.forward) AS forward, COALESCE(a.content, q.additional_info) AS additional_info, q.reply_type, q.reply_time, q.dnssec, q.list_id, q.ede FROM query_storage q LEFT JOIN domain_by_id d ON q.domain = d.id LEFT JOIN client_by_id c ON q.client = c.id LEFT JOIN forward_by_id f ON q.forward = f.id LEFT JOIN addinfo_by_id a ON q.additional_info = a.id;"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE domain_by_id (id INTEGER PRIMARY KEY, domain TEXT NOT NULL);"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE client_by_id (id INTEGER PRIMARY KEY, ip TEXT NOT NULL, name TEXT);"* ]]
   [[ "${lines[@]}" == *"CREATE TABLE forward_by_id (id INTEGER PRIMARY KEY, forward TEXT NOT NULL);"* ]]

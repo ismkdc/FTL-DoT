@@ -36,7 +36,7 @@
 #include "lookup-table.h"
 
 /// The version of shared memory used
-#define SHARED_MEMORY_VERSION 14
+#define SHARED_MEMORY_VERSION 17
 
 /// The name of the shared memory. Use this when connecting to the shared memory.
 #define SHMEM_PATH "/dev/shm"
@@ -55,6 +55,7 @@
 #define SHARED_DOMAINS_LOOKUP_NAME "domains-lookup"
 #define SHARED_DNS_CACHE_LOOKUP_NAME "dns-cache-lookup"
 #define SHARED_RECYCLER_NAME "recycler"
+#define SHARED_INTARRAYS_NAME "intarrays"
 
 // Allocation step for FTL-strings bucket. This is somewhat special as we use
 // this as a general-purpose storage which should always be large enough. If,
@@ -62,6 +63,7 @@
 // close to impossible), the data will be properly truncated and we try again in
 // the next lock round
 #define STRINGS_ALLOC_STEP (10*pagesize)
+#define INTARRAYS_ALLOC_STEP (2*pagesize)
 
 // Global counters struct
 countersStruct *counters = NULL;
@@ -84,6 +86,7 @@ static SharedMemory shm_clients_lookup = { 0 };
 static SharedMemory shm_domains_lookup = { 0 };
 static SharedMemory shm_dns_cache_lookup = { 0 };
 static SharedMemory shm_recycler = { 0 };
+static SharedMemory shm_intarrays = { 0 };
 
 static SharedMemory *sharedMemories[] = { &shm_lock,
                                           &shm_strings,
@@ -100,7 +103,8 @@ static SharedMemory *sharedMemories[] = { &shm_lock,
                                           &shm_clients_lookup,
                                           &shm_domains_lookup,
                                           &shm_dns_cache_lookup,
-                                          &shm_recycler };
+                                          &shm_recycler,
+                                          &shm_intarrays };
 
 // Variable size array structs
 static queriesData *queries = NULL;
@@ -147,6 +151,138 @@ static unsigned int local_shm_counter = 0;
 static pid_t shmem_pid = 0;
 static size_t used_shmem = 0u;
 static size_t get_optimal_object_size(const size_t objsize, const size_t minsize);
+
+// Minimum / initial capacity of the string hash table (must be power of 2)
+#define STR_HASH_MIN_CAP 4096u
+
+// String hash table entry: hash=0 means the slot is empty
+struct str_hash_entry {
+	uint32_t hash;
+	uint32_t offset;
+};
+
+static struct str_hash_entry *str_hash_table = NULL;
+static uint32_t str_hash_cap  = 0; // current capacity (always power of 2)
+static uint32_t str_hash_used = 0; // number of occupied slots
+
+// How far into the string pool we have indexed. Lets us incrementally pick up
+// strings that were added by forked children.
+static size_t str_hash_synced_pos = 0;
+
+// Insert an entry into the string hash table, growing if needed.
+static void str_hash_insert(uint32_t hash, uint32_t offset)
+{
+	// The string pool (shm_strings) is append-only: strings are never
+	// removed or moved, so pool offsets remain valid indefinitely. This
+	// lets us maintain a process-local open-addressing hash table that maps
+	// (string hash -> pool offset) without needing it in shared memory.
+	// Forked children inherit the parent's table via COW; any strings they
+	// add will simply be duplicated in the rare case the parent later adds
+	// the same string (negligible memory impact).
+
+	// Grow if the table doesn't exist or load factor exceeds 75%
+	if(str_hash_table == NULL || str_hash_used * 4 >= str_hash_cap * 3)
+	{
+		const uint32_t new_cap = str_hash_cap ? str_hash_cap * 2 : STR_HASH_MIN_CAP;
+		struct str_hash_entry *new_tbl = calloc(new_cap, sizeof(*new_tbl));
+		if(new_tbl == NULL)
+			return; // keep old table; worst case we miss some dedup
+
+		// Rehash existing entries into the new table
+		if(str_hash_table != NULL)
+		{
+			for(uint32_t i = 0; i < str_hash_cap; i++)
+			{
+				if(str_hash_table[i].hash == 0)
+					continue;
+				uint32_t idx = str_hash_table[i].hash & (new_cap - 1);
+				while(new_tbl[idx].hash != 0)
+					idx = (idx + 1) & (new_cap - 1);
+				new_tbl[idx] = str_hash_table[i];
+			}
+			free(str_hash_table);
+		}
+
+		str_hash_table = new_tbl;
+		str_hash_cap = new_cap;
+	}
+
+	// Insert into the table using linear probing
+	uint32_t idx = hash & (str_hash_cap - 1);
+	while(str_hash_table[idx].hash != 0)
+		idx = (idx + 1) & (str_hash_cap - 1);
+	str_hash_table[idx] = (struct str_hash_entry){ .hash = hash, .offset = offset };
+	str_hash_used++;
+}
+
+// Search the hash table for a string. Returns the pool offset, or SIZE_MAX if
+// not found. On hash collision, verifies with memcmp against the pool.
+// Important: len must include the terminating character, and the hash must have
+// been calculated over the entire string including the terminator
+static size_t str_hash_find(uint32_t hash, const char *input, size_t len)
+{
+	if(str_hash_table == NULL || str_hash_cap == 0)
+		return SIZE_MAX;
+
+	uint32_t idx = hash & (str_hash_cap - 1);
+	while(str_hash_table[idx].hash != 0)
+	{
+		if(str_hash_table[idx].hash == hash)
+		{
+			const char *candidate = &((const char*)shm_strings.ptr)[str_hash_table[idx].offset];
+			// Uses memcmp with the length of the input string (including the
+			// terminating character) instead of strcmp since bounded compares
+			// are safe here (terminating NUL included in len) and always faster
+			// (no internal strlen() calls)
+			if(memcmp(candidate, input, len) == 0)
+				return (size_t)str_hash_table[idx].offset;
+		}
+		idx = (idx + 1) & (str_hash_cap - 1);
+	}
+	return SIZE_MAX;
+}
+
+// Walk any portion of the string pool that was appended since our last sync
+// (e.g. by a forked child) and add those strings to the hash table.
+static void str_hash_sync(void)
+{
+	// Safety check: if the string pool isn't mapped, we can't sync
+	if(shm_strings.ptr == NULL || shmSettings == NULL)
+		return;
+
+	const char *pool = (const char *)shm_strings.ptr;
+	size_t pos = str_hash_synced_pos;
+	const size_t end = shmSettings->next_str_pos;
+
+	// Position 0 holds the empty-string sentinel — skip it
+	if(pos == 0 && end > 0)
+		pos = 1;
+
+	// Walk new strings until we reach the end of the pool, adding them to
+	// the hash table. This is O(new_bytes) but only happens when new
+	// strings are added by other processes, which is rare.
+	while(pos < end)
+	{
+		const char *s = pool + pos;
+		const size_t slen = strlen(s);
+		if(slen > 0)
+			str_hash_insert(hashStr(s), (uint32_t)pos);
+		pos += slen + 1;
+	}
+
+	str_hash_synced_pos = end;
+}
+
+// Free the process-local string hash table (called from destroy_shmem)
+static void str_hash_reset(void)
+{
+	if(str_hash_table != NULL)
+		free(str_hash_table);
+	str_hash_table = NULL;
+	str_hash_cap = 0;
+	str_hash_used = 0;
+	str_hash_synced_pos = 0;
+}
 
 // Private prototypes
 static void *enlarge_shmem_struct(const char type, const size_t alloc_step);
@@ -203,10 +339,10 @@ static bool chown_shmem(SharedMemory *sharedMemory, struct passwd *ent_pw)
 	return true;
 }
 
-// Add string to our shared memory buffer
-// This function checks if the string already exists in the buffer and returns
-// the position of the existing string if it does. Otherwise, it adds the
-// string to the buffer and returns the position of the newly added string.
+// Add string to our shared memory buffer using a process-local hash table for
+// O(1) deduplication. Returns the offset of the string in the shared memory
+// buffer, or zero for the empty string. If the string is too long to fit, it
+// will be truncated and added anyway, and a warning will be logged.
 size_t _addstr(const char *input, const char *func, const int line, const char *file)
 {
 	if(input == NULL)
@@ -238,15 +374,24 @@ size_t _addstr(const char *input, const char *func, const int line, const char *
 		len = avail_mem;
 	}
 
-	// Search buffer for existence of exact same string
-	char *str_pos = memmem(shm_strings.ptr, shmSettings->next_str_pos, input, len);
-	if(str_pos != NULL)
+	// Ensure our hash table covers any strings added by other processes
+	// (e.g. forked TCP children). This is O(new_bytes) — zero cost when the
+	// pool hasn't changed, which is the common case.
+	str_hash_sync();
+
+	// O(1) hash-table lookup for an existing copy of this string
+	// Note: len contains the terminating character, which is also included in
+	// the hash and memcmp to allow deduplication of *identical* strings that
+	// differ only in length
+	const uint32_t hash = hashStr(input);
+	const size_t existing = str_hash_find(hash, input, len);
+	if(existing != SIZE_MAX)
 	{
-		log_debug(DEBUG_SHMEM, "Reusing existing string \"%s\" at %zd in %s() (%s:%i)",
-		          input, str_pos - (char*)shm_strings.ptr, func, short_path(file), line);
+		log_debug(DEBUG_SHMEM, "Reusing existing string \"%s\" at %zu in %s() (%s:%i)",
+		          input, existing, func, short_path(file), line);
 
 		// Return position of existing string
-		return (str_pos - (char*)shm_strings.ptr);
+		return existing;
 	}
 
 	// Debugging output
@@ -256,11 +401,18 @@ size_t _addstr(const char *input, const char *func, const int line, const char *
 	// Copy the C string pointed by input into the shared string buffer
 	strncpy(&((char*)shm_strings.ptr)[shmSettings->next_str_pos], input, len);
 
+	// Record the new string's position before advancing the pointer
+	const size_t new_offset = shmSettings->next_str_pos;
+
 	// Increment string length counter
 	shmSettings->next_str_pos += len;
 
+	// Add to our hash table so future lookups are O(1)
+	str_hash_insert(hash, (uint32_t)new_offset);
+	str_hash_synced_pos = shmSettings->next_str_pos;
+
 	// Return start of stored string
-	return (shmSettings->next_str_pos - len);
+	return new_offset;
 }
 
 // Get string from shared memory buffer
@@ -275,6 +427,123 @@ const char *_getstr(const size_t pos, const char *func, const int line, const ch
 		         pos, func, file, line, shmSettings->next_str_pos);
 		return "";
 	}
+}
+
+// Add an integer array to shared memory.
+// Storage format: [count:int32][id0:int32][id1:int32]...
+// Returns the position (in int32 units) of the stored array.
+// Position 0 is reserved for "empty array" (valid).
+// Returns SIZE_MAX on error (out of space).
+size_t _addintarray(const int32_t *ids, int count, const char *func, const int line, const char *file)
+{
+	// Empty arrays use position 0 (the pre-initialized empty sentinel)
+	if(ids == NULL || count <= 0)
+		return 0;
+
+	const int32_t *pool = (const int32_t*)shm_intarrays.ptr;
+	const size_t slots_needed = (size_t)(1 + count);
+
+	// Dedup: walk existing entries and return position of an identical
+	// array if one exists. The number of unique arrays is small (one per
+	// distinct group combination across all clients), so a linear scan
+	// is fast and avoids the complexity of a hash table.
+	size_t scan = 1; // skip position 0 (empty sentinel)
+	while(scan < shmSettings->next_intarray_pos)
+	{
+		const int existing_count = (int)pool[scan];
+		if(existing_count == count &&
+		   memcmp(&pool[scan + 1], ids, (size_t)count * sizeof(int32_t)) == 0)
+		{
+			log_debug(DEBUG_SHMEM, "Reusing existing int array at pos %zu in %s() (%s:%i)",
+			          scan, func, short_path(file), line);
+			return scan;
+		}
+		// Advance past this entry: 1 (count) + existing_count (data)
+		scan += (size_t)(1 + existing_count);
+	}
+
+	// No duplicate found — append new entry
+	const size_t bytes_needed = slots_needed * sizeof(int32_t);
+	const size_t avail_bytes = shm_intarrays.size - shmSettings->next_intarray_pos * sizeof(int32_t);
+
+	if(bytes_needed > avail_bytes)
+	{
+		log_warn("addintarray: Not enough space (%zu bytes needed, %zu available) in %s() (%s:%i)",
+		         bytes_needed, avail_bytes, func, short_path(file), line);
+		return SIZE_MAX;
+	}
+
+	int32_t *wpool = (int32_t*)shm_intarrays.ptr;
+	const size_t pos = shmSettings->next_intarray_pos;
+
+	// Write count followed by data
+	wpool[pos] = (int32_t)count;
+	memcpy(&wpool[pos + 1], ids, (size_t)count * sizeof(int32_t));
+
+	// Advance write head
+	shmSettings->next_intarray_pos += slots_needed;
+
+	log_debug(DEBUG_SHMEM, "Added int array (%d elements) at pos %zu in %s() (%s:%i)",
+	          count, pos, func, short_path(file), line);
+
+	return pos;
+}
+
+// Get an integer array from shared memory.
+// Returns a pointer to the data portion (after the count field).
+// Sets *count to the number of elements. Returns NULL for position 0
+// (empty array) or on error.
+const int32_t *_getintarray(const size_t pos, int *count, const char *func, const int line, const char *file)
+{
+	// Position 0 is the empty-array sentinel
+	if(pos == 0)
+	{
+		if(count != NULL)
+			*count = 0;
+		return NULL;
+	}
+
+	if(pos >= shmSettings->next_intarray_pos)
+	{
+		log_warn("Tried to access intarray at %zu in %s() (%s:%i) but next_intarray_pos is %zu",
+		         pos, func, file, line, shmSettings->next_intarray_pos);
+		if(count != NULL)
+			*count = 0;
+		return NULL;
+	}
+
+	const int32_t *pool = (const int32_t*)shm_intarrays.ptr;
+	const int n = (int)pool[pos];
+
+	if(count != NULL)
+		*count = n;
+
+	// Return pointer to data portion (element after count)
+	return n > 0 ? &pool[pos + 1] : NULL;
+}
+
+// Format an int array from SHM as a comma-separated string for logging.
+// Writes into the caller-provided buffer and returns it.
+const char *fmt_intarray(const size_t pos, char *buf, const size_t bufsz)
+{
+	int count = 0;
+	const int32_t *ids = _getintarray(pos, &count, __FUNCTION__, __LINE__, __FILE__);
+	if(ids == NULL || count == 0)
+	{
+		if(bufsz > 0)
+			buf[0] = '\0';
+		return buf;
+	}
+
+	size_t p = 0;
+	for(int i = 0; i < count && p + 13 < bufsz; i++)
+	{
+		if(i > 0)
+			buf[p++] = ',';
+		p += (size_t)snprintf(buf + p, bufsz - p, "%d", (int)ids[i]);
+	}
+	buf[p] = '\0';
+	return buf;
 }
 
 // Create a mutex for shared memory
@@ -339,6 +608,9 @@ static void remap_shm(void)
 	realloc_shm(&shm_strings, counters->strings_MAX, sizeof(char), false);
 	// strings are not exposed by a global pointer
 
+	realloc_shm(&shm_intarrays, counters->intarrays_MAX, sizeof(int32_t), false);
+	// int arrays are not exposed by a global pointer
+
 	realloc_shm(&shm_domains_lookup, counters->domains_lookup_MAX, sizeof(struct lookup_table), false);
 	domains_lookup = (struct lookup_table*)shm_domains_lookup.ptr;
 
@@ -396,8 +668,11 @@ void _lock_shm(const char *func, const int line, const char *file)
 
 	result = pthread_mutex_lock(&shmLock->lock.inner);
 
-	clock_gettime(CLOCK_MONOTONIC, &shmLock->time.begin);
-	log_debug(DEBUG_LOCKS, "Obtained SHM lock for %s() (%s:%i)", func, file, line);
+	if(config.debug.timing.v.b)
+	{
+		clock_gettime(CLOCK_MONOTONIC, &shmLock->time.begin);
+		log_debug(DEBUG_LOCKS, "Obtained SHM lock for %s() (%s:%i)", func, file, line);
+	}
 
 	if(result != 0)
 		log_err("Error when obtaining inner SHM lock: %s", strerror(result));
@@ -439,9 +714,9 @@ void _unlock_shm(const char *func, const int line, const char * file)
 	if(result != 0)
 		log_err("Failed to unlock outer SHM lock: %s", strerror(result));
 
-	clock_gettime(CLOCK_MONOTONIC, &shmLock->time.end);
 	if(config.debug.timing.v.b)
 	{
+		clock_gettime(CLOCK_MONOTONIC, &shmLock->time.end);
 		const double lock_time = (shmLock->time.end.tv_sec - shmLock->time.begin.tv_sec) / 1000.0 +
 		                         (shmLock->time.end.tv_nsec - shmLock->time.begin.tv_nsec) / 1e6;
 		log_debug(DEBUG_TIMING, "SHM lock held for %.3f ms in %s() (%s:%i)",
@@ -505,6 +780,18 @@ bool init_shmem()
 	// Initialize shared string object with an empty string at position zero
 	((char*)shm_strings.ptr)[0] = '\0';
 	shmSettings->next_str_pos = 1;
+
+	/****************************** shared int arrays buffer ******************************/
+	// Try to create shared memory object
+	create_shm(SHARED_INTARRAYS_NAME, &shm_intarrays, INTARRAYS_ALLOC_STEP);
+	if(shm_intarrays.ptr == NULL)
+		return false;
+
+	counters->intarrays_MAX = shm_intarrays.size / sizeof(int32_t);
+
+	// Initialize with an empty array at position zero (count = 0)
+	((int32_t*)shm_intarrays.ptr)[0] = 0;
+	shmSettings->next_intarray_pos = 1;
 
 	/****************************** shared domains struct ******************************/
 	size_t size = get_optimal_object_size(sizeof(domainsData), 1);
@@ -628,6 +915,9 @@ void chown_all_shmem(struct passwd *ent_pw)
 // Destroy mutex and, subsequently, delete all shared memory objects
 void destroy_shmem(void)
 {
+	// Free the process-local string dedup hash table
+	str_hash_reset();
+
 	// First, we destroy the mutex
 	if(shmLock != NULL)
 	{
@@ -787,6 +1077,12 @@ static void *enlarge_shmem_struct(const char type, const size_t alloc_step)
 			sizeofobj = sizeof(char);
 			size = &counters->strings_MAX;
 			break;
+		case INTARRAYS:
+			sharedMemory = &shm_intarrays;
+			allocation_step = INTARRAYS_ALLOC_STEP;
+			sizeofobj = sizeof(int32_t);
+			size = &counters->intarrays_MAX;
+			break;
 		case CLIENTS_LOOKUP:
 			sharedMemory = &shm_clients_lookup;
 			allocation_step = get_optimal_object_size(sizeof(struct lookup_table), alloc_step);
@@ -907,6 +1203,10 @@ static bool realloc_shm(SharedMemory *sharedMemory, const size_t size1, const si
 
 static void delete_shm(SharedMemory *sharedMemory)
 {
+	// Skip if this SHM region was never created (e.g. crash before init)
+	if(sharedMemory->name == NULL)
+		return;
+
 	// Unmap shared memory (if mmapped)
 	if(sharedMemory->ptr != NULL)
 	{
@@ -930,7 +1230,7 @@ static void delete_shm(SharedMemory *sharedMemory)
 	sharedMemory->ptr = NULL;
 
 	// Close shared memory file descriptor
-	if(close(sharedMemory->fd) != 0)
+	if(sharedMemory->fd > -1 && close(sharedMemory->fd) != 0)
 		log_warn("delete_shm(): close(%i) failed: %s", sharedMemory->fd, strerror(errno));
 	sharedMemory->fd = -1;
 
@@ -1002,14 +1302,28 @@ static size_t get_optimal_object_size(const size_t objsize, const size_t minsize
 // Enlarge shared memory to be able to hold at least one new record
 static void shm_ensure_size(void)
 {
-	if(counters->queries >= counters->queries_MAX-1)
+	if(counters->queries + counters->queries_offset >= counters->queries_MAX-1)
 	{
-		// Have to reallocate shared memory
-		queries = enlarge_shmem_struct(QUERIES, 1);
-		if(queries == NULL)
+		// Try to compact before growing: reclaim dead space at the front
+		if(counters->queries_offset > 0)
 		{
-			log_crit("Memory allocation failed! Exiting");
-			exit(EXIT_FAILURE);
+			memmove(queries, queries + counters->queries_offset,
+			        counters->queries * sizeof(queriesData));
+			memset(queries + counters->queries, 0,
+			       counters->queries_offset * sizeof(queriesData));
+			counters->queries_offset = 0;
+			queryIDMap_clear();
+		}
+
+		// After compaction, check if we still need to grow
+		if(counters->queries >= counters->queries_MAX-1)
+		{
+			queries = enlarge_shmem_struct(QUERIES, 1);
+			if(queries == NULL)
+			{
+				log_crit("Memory allocation failed! Exiting");
+				exit(EXIT_FAILURE);
+			}
 		}
 	}
 	if(counters->upstreams >= counters->upstreams_MAX-1)
@@ -1056,6 +1370,15 @@ static void shm_ensure_size(void)
 	{
 		// Have to reallocate shared memory
 		if(enlarge_shmem_struct(STRINGS, 1) == NULL)
+		{
+			log_crit("Memory allocation failed! Exiting");
+			exit(EXIT_FAILURE);
+		}
+	}
+	if(shmSettings->next_intarray_pos * sizeof(int32_t) + INTARRAYS_ALLOC_STEP >= shm_intarrays.size)
+	{
+		// Have to reallocate shared memory
+		if(enlarge_shmem_struct(INTARRAYS, 1) == NULL)
 		{
 			log_crit("Memory allocation failed! Exiting");
 			exit(EXIT_FAILURE);
@@ -1130,6 +1453,24 @@ bool get_per_client_regex(const unsigned int clientID, const unsigned int regexI
 	return ((bool*) shm_per_client_regex.ptr)[id];
 }
 
+// Returns a pointer to the start of clientID's row in the per-client regex
+// bool array, performing the offset arithmetic and bounds check once.
+// Use this before a per-client regex loop to avoid recomputing the row
+// offset on every iteration. Returns NULL on out-of-bounds.
+const bool *get_client_regex_row(const unsigned int clientID)
+{
+	const unsigned int num_regex_tot = get_num_regex(REGEX_MAX);
+	const unsigned int base = clientID * num_regex_tot;
+	const size_t maxval = shm_per_client_regex.size / sizeof(bool);
+	if(base >= maxval)
+	{
+		log_err("get_client_regex_row(%u): base offset %u out of bounds (max %zu)",
+		        clientID, base, maxval);
+		return NULL;
+	}
+	return ((const bool*) shm_per_client_regex.ptr) + base;
+}
+
 void set_per_client_regex(const unsigned int clientID, const unsigned int regexID, const bool value)
 {
 	const unsigned int num_regex_tot = get_num_regex(REGEX_MAX); // total number
@@ -1193,13 +1534,16 @@ queriesData *_getQuery(const unsigned int queryID, const bool checkMagic, const 
 		return NULL;
 	}
 
+	// Apply offset for physical array access
+	const unsigned int physID = queryID + counters->queries_offset;
+
 	// Check allowed range
-	if(!check_range(queryID, counters->queries_MAX, "query", func, line, file))
+	if(!check_range(physID, counters->queries_MAX, "query", func, line, file))
 		return NULL;
 
 	// Check magic byte
-	if(check_magic(queryID, checkMagic, queries[queryID].magic, "query", func, line, file))
-		return &queries[queryID];
+	if(check_magic(physID, checkMagic, queries[physID].magic, "query", func, line, file))
+		return &queries[physID];
 
 	return NULL;
 }

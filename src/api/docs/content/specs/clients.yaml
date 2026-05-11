@@ -484,7 +484,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "UNIQUE constraint failed: clientlist.client"
+              hint: "Client already exists (UNIQUE constraint failed)"
             took: 0.003
   parameters:
     client:

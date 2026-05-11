@@ -412,11 +412,10 @@ static int send_api_auth_status(struct ftl_conn *api, const int user_id, const t
 	{
 		log_debug(DEBUG_API, "API Auth status: OK");
 
-		// Ten minutes validity
 		AUTOLOCK(&auth_lock);
 		if(snprintf(pi_hole_extra_headers, sizeof(pi_hole_extra_headers),
 		            FTL_SET_COOKIE,
-		            auth_data[user_id].sid, config.webserver.session.timeout.d.ui) < 0)
+		            auth_data[user_id].sid, config.webserver.session.timeout.v.ui) < 0)
 		{
 			return send_json_error(api, 500, "internal_error", "Internal server error", NULL);
 		}

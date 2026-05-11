@@ -132,7 +132,43 @@ def _assert_alive(ctx=""):
 
 # ── module fixtures ───────────────────────────────────────────────────────
 
+def _wait_for_ftl_restart(timeout=10):
+    """Wait for FTL to complete a restart triggered by the teleporter test.
+
+    The preceding teleporter-import test triggers restart_ftl() which
+    sends SIGTERM.  With deferred signal processing the old process may
+    still be listening briefly before it shuts down.  Rather than
+    probing the API (which can succeed against the dying process), we
+    watch /var/log/pihole/FTL.log for the CLI-password marker that
+    confirms the new process has fully initialised and applied the test
+    configuration.
+    """
+    log_path = "/var/log/pihole/FTL.log"
+    marker = "CLI password set and stored in file"
+
+    # Record current end-of-file so we only scan new output
+    try:
+        with open(log_path, "r") as f:
+            f.seek(0, 2)
+            start_pos = f.tell()
+    except FileNotFoundError:
+        start_pos = 0
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with open(log_path, "r") as f:
+                f.seek(start_pos)
+                for line in f:
+                    if marker in line:
+                        return
+        except FileNotFoundError:
+            pass
+        time.sleep(0.25)
+
+
 def setup_module(_mod):
+    _wait_for_ftl_restart()
     _set_password(PASSWORD)
 
 

@@ -106,6 +106,15 @@ CREATE TRIGGER tr_domainlist_update AFTER UPDATE ON domainlist
       UPDATE domainlist SET date_modified = (cast(strftime('%s', 'now') as int)) WHERE id = NEW.id;
     END;
 
+-- Views use LEFT JOINs deliberately: groups can be removed from entries at
+-- runtime, leaving zero rows in the *_by_group junction tables. LEFT JOIN + IS
+-- NULL makes such entries match all clients (safe default). Do NOT convert to
+-- INNER JOIN — entries with no group assignments would silently vanish.
+--
+-- These views are queried on every DNS lookup (cache miss) via carray()-based
+-- shared statements in gravity-db.c. The JOINs live-check enabled flags and
+-- group assignments, ensuring runtime changes take effect immediately without a
+-- full gravity reload.
 CREATE VIEW vw_allowlist AS SELECT domain, domainlist.id AS id, domainlist_by_group.group_id AS group_id
     FROM domainlist
     LEFT JOIN domainlist_by_group ON domainlist_by_group.domainlist_id = domainlist.id
@@ -197,6 +206,7 @@ CREATE TRIGGER tr_client_delete AFTER DELETE ON client
 CREATE INDEX idx_adlist_by_group_gid ON adlist_by_group (group_id, adlist_id);
 CREATE INDEX idx_domainlist_by_group_gid ON domainlist_by_group (group_id, domainlist_id);
 CREATE INDEX idx_gravity ON gravity (domain, adlist_id);
+CREATE INDEX idx_antigravity ON antigravity (domain, adlist_id);
 
 /* ^^^ basic gravity table definition, taken from /advanced/Templates/gravity.db.sql ^^^ */
 /* vvv Test content following vvv */
@@ -242,6 +252,7 @@ INSERT INTO antigravity VALUES('antigravity.ftl',2);
 INSERT INTO antigravity VALUES('@@||antigravity.ftl^',2);
 
 INSERT INTO info VALUES('gravity_count',8);
+INSERT INTO info VALUES('antigravity_count',2);
 INSERT INTO info VALUES('abp_domains',1);
 INSERT INTO info VALUES('updated',0);
 

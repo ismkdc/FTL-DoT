@@ -42,7 +42,6 @@ src/api/docs/hex
 /node_modules/
 
 # Test Leftovers
-dig.log
 ptr.log
 
 # Test libraries (cloned by test/run.sh)

@@ -33,7 +33,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 # SQLITE_DQS=0: This setting disables the double-quoted string literal misfeature.
 # SQLITE_ENABLE_DBPAGE_VTAB: Enables the SQLITE_DBPAGE virtual table. Warning: writing to the SQLITE_DBPAGE virtual table can very easily cause unrecoverably database corruption. It is needed for the .recover SQLite3 command.
 # SQLITE_TEMP_STORE=1: This option sets the default value for the temp_store pragma to 1. This means that temporary tables and indices are always stored on disk. This is the default setting.
-# SQLITE_DEFAULT_CACHE_SIZE=-16384: Allow up to 16 MiB of cache to be used by SQLite3 (default is 2000 kiB)
+# SQLITE_DEFAULT_CACHE_SIZE=4096: Per-connection page cache. Positive value means pages (not kiB), so at the default 4 kiB page size this caps each sqlite3 connection's private cache at ~16 MiB. Previously set to 16384 (= ~64 MiB/conn), which was oversized for FTL's workload: the mmap-backed on-disk query DB lets the kernel page cache cover cold reads for free, and both long-lived handles (_memdb, gravity_db) work against small hot sets. 16 MiB is still comfortably larger than either hot set.
 # SQLITE_DEFAULT_SYNCHRONOUS=1: Use normal synchronous mode (default is 2)
 # SQLITE_LIKE_DOESNT_MATCH_BLOBS: This option causes the LIKE operator to only match BLOB values against BLOB values and TEXT values against TEXT values. This compile-time option makes SQLite run more efficiently when processing queries that use the LIKE operator.
 # HAVE_MALLOC_H + HAVE_MALLOC_USABLE_SIZE: This option causes SQLite to try to use the malloc_usable_size() function to obtain the actual size of memory allocations from the underlying malloc() system interface. Applications are encouraged to use HAVE_MALLOC_USABLE_SIZE whenever possible.
@@ -42,7 +42,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 # SQLITE_MAX_PREPARE_RETRY=200: This option sets the maximum number of automatic re-preparation attempts that can occur after encountering a schema change. This can be caused by running ANALYZE which is done periodically by FTL.
 # SQLITE_ENABLE_CARRAY: Enable the carray virtual table module
 # SQLITE_ENABLE_PERCENTILE: Enable the percentile aggregate function
-set(SQLITE_DEFINES "-DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_OMIT_SHARED_CACHE -DSQLITE_DEFAULT_FOREIGN_KEYS=1 -DSQLITE_DQS=0 -DSQLITE_ENABLE_DBPAGE_VTAB -DSQLITE_TEMP_STORE=1 -DSQLITE_DEFAULT_CACHE_SIZE=16384 -DSQLITE_DEFAULT_SYNCHRONOUS=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DHAVE_MALLOC_H -DHAVE_MALLOC_USABLE_SIZE -DHAVE_FDATASYNC -DSQLITE_DEFAULT_WORKER_THREADS=0 -DSQLITE_MAX_PREPARE_RETRY=200 -DSQLITE_ENABLE_CARRAY=1 -DSQLITE_ENABLE_PERCENTILE=1")
+# SQLITE_DEFAULT_JOURNAL_SIZE_LIMIT=33554432: Cap the rollback journal / WAL file at 32 MiB. Without this, the -wal file on the on-disk query database can grow unbounded between checkpoints on busy resolvers, increasing latency and disk usage. Applied as a compile-time default so every connection inherits it (including attached databases).
+set(SQLITE_DEFINES "-DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_OMIT_SHARED_CACHE -DSQLITE_DEFAULT_FOREIGN_KEYS=1 -DSQLITE_DQS=0 -DSQLITE_ENABLE_DBPAGE_VTAB -DSQLITE_TEMP_STORE=1 -DSQLITE_DEFAULT_CACHE_SIZE=4096 -DSQLITE_DEFAULT_SYNCHRONOUS=1 -DSQLITE_DEFAULT_JOURNAL_SIZE_LIMIT=33554432 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DHAVE_MALLOC_H -DHAVE_MALLOC_USABLE_SIZE -DHAVE_FDATASYNC -DSQLITE_DEFAULT_WORKER_THREADS=0 -DSQLITE_MAX_PREPARE_RETRY=200 -DSQLITE_ENABLE_CARRAY=1 -DSQLITE_ENABLE_PERCENTILE=1")
 
 # Code hardening and debugging improvements
 # -fstack-protector-strong: The program will be resistant to having its stack overflowed
@@ -264,8 +265,6 @@ set(sources
         signals.h
         timers.c
         timers.h
-        vector.c
-        vector.h
         version.c
         version.h
         )

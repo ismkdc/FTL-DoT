@@ -28,8 +28,10 @@
 #include "events.h"
 // get_FTL_db_stats()
 #include "files.h"
-// gravity_updated()
+// gravity_updated(), gravityDB_dump_perf_stats()
 #include "database/gravity-db.h"
+// FTL_dump_cache_stats() - forward declaration to avoid pulling in dnsmasq headers
+extern void FTL_dump_cache_stats(void);
 // parse_proc_meminfo()
 #include "procps.h"
 // sqlite3_mem_used()
@@ -180,6 +182,10 @@ void *DB_thread(void *val)
 	// Last memory log timestamp
 	time_t lastMemLog = 0;
 
+	// Last gravity performance statistics dump (start from now so the first
+	// dump happens after 5 minutes of actual activity, not immediately)
+	time_t lastGravityStats = before;
+
 	// This thread runs until shutdown of the process. We keep this thread
 	// running when pihole-FTL.db is corrupted because reloading of privacy
 	// level, and the gravity database (initially and after gravity)
@@ -195,12 +201,21 @@ void *DB_thread(void *val)
 			lastMemLog = now;
 		}
 
+		// Dump gravity lookup and FTL cache performance statistics every 5 minutes
+		// (only when debug.performance is enabled)
+		if(config.debug.performance.v.b && now - lastGravityStats >= 300)
+		{
+			TIMED_DB_OP(FTL_dump_cache_stats());
+			TIMED_DB_OP(gravityDB_dump_perf_stats());
+			lastGravityStats = now;
+		}
+
 		// If the database is busy, no moving is happening and queries are retained in
 		// here until the next try. This ensures we cannot loose queries.
 		// Do this once per second
 		if(now > before)
 		{
-			queries_to_database();
+			TIMED_DB_OP(queries_to_database());
 			before = now;
 
 			// Check if we need to reload gravity
@@ -209,6 +224,10 @@ void *DB_thread(void *val)
 				// Reload gravity
 				set_event(RELOAD_GRAVITY);
 			}
+
+			// Re-check client group membership for any client still
+			// inside its 3-minute identification window
+			TIMED_DB_OP(gravityDB_recheck_clients());
 		}
 
 		// Intermediate cancellation-point
@@ -299,7 +318,7 @@ void *DB_thread(void *val)
 
 		// Process database related event queue elements
 		if(get_and_clear_event(RELOAD_GRAVITY))
-			FTL_reload_all_domainlists();
+			TIMED_DB_OP(FTL_reload_all_domainlists());
 
 		// Intermediate cancellation-point
 		BREAK_IF_KILLED();

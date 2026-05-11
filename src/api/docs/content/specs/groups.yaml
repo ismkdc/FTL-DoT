@@ -398,7 +398,7 @@ components:
             error:
               key: "database_error"
               message: "Could not add to gravity database"
-              hint: "UNIQUE constraint failed: grouplist.group"
+              hint: "Group already exists (UNIQUE constraint failed)"
             took: 0.003
 
   parameters:

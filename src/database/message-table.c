@@ -289,6 +289,7 @@ bool create_message_table(sqlite3 *db)
 	if(!db_set_FTL_property(db, DB_VERSION, 6))
 	{
 		log_err("create_message_table(): Failed to update database version!");
+		dbquery(db, "ROLLBACK");
 		return false;
 	}
 
@@ -387,9 +388,9 @@ static int _add_message(const enum message_type type,
 		goto end_of_add_message;
 	}
 
-	// Execute and finalize (we accept both SQLITE_OK = removed and
-	// SQLITE_DONE = nothing to remove)
-	if((rc = sqlite3_step(stmt)) != SQLITE_OK && rc != SQLITE_DONE)
+	// Execute and finalize. sqlite3_step() returns SQLITE_DONE for
+	// non-SELECT statements (whether or not any rows were deleted).
+	if((rc = sqlite3_step(stmt)) != SQLITE_DONE)
 	{
 		log_err("add_message(type=%u, message=%s) - SQL error step DELETE: %s",
 			type, message, sqlite3_errstr(rc));
@@ -458,6 +459,7 @@ static int _add_message(const enum message_type type,
 			log_err("add_message(type=%u, message=%s) - Failed to bind argument %zu (type %u): %s",
 			        type, message, 3 + j, datatype, sqlite3_errstr(rc));
 			sqlite3_finalize(stmt);
+			stmt = NULL;
 			checkFTLDBrc(rc);
 			va_end(ap);
 			goto end_of_add_message;
@@ -475,16 +477,14 @@ static int _add_message(const enum message_type type,
 		goto end_of_add_message;
 	}
 
+	// Get row ID of the newly added message (only on success)
+	rowid = sqlite3_last_insert_rowid(db);
+
 end_of_add_message: // Close database connection
 
 	// Final database handling
 	if(stmt != NULL)
-	{
 		sqlite3_finalize(stmt);
-
-		// Get row ID of the newly added message
-		rowid = sqlite3_last_insert_rowid(db);
-	}
 
 	dbclose(&db);
 
@@ -509,22 +509,30 @@ bool delete_message(cJSON *ids, int *deleted)
 	if(sqlite3_prepare_v2(db, "DELETE FROM message WHERE id = ?;", -1, &res, 0) != SQLITE_OK)
 	{
 		log_err("SQL error (%i): %s", sqlite3_errcode(db), sqlite3_errmsg(db));
+		dbclose(&db);
 		return false;
 	}
 
 	// Loop over id in ids array
+	bool success = true;
 	cJSON *id = NULL;
 	cJSON_ArrayForEach(id, ids)
 	{
 		// Bind id to prepared statement
 		const int idval = cJSON_GetNumberValue(id);
-		sqlite3_bind_int(res, 1, idval);
+		if(sqlite3_bind_int(res, 1, idval) != SQLITE_OK)
+		{
+			log_err("delete_message() - Failed to bind id %d: %s", idval, sqlite3_errmsg(db));
+			success = false;
+			break;
+		}
 
 		// Execute and finalize
 		if(sqlite3_step(res) != SQLITE_DONE)
 		{
 			log_err("SQL error (%i): %s", sqlite3_errcode(db), sqlite3_errmsg(db));
-			return false;
+			success = false;
+			break;
 		}
 
 		// Add to deleted count
@@ -537,7 +545,7 @@ bool delete_message(cJSON *ids, int *deleted)
 	// Close database connection
 	dbclose(&db);
 
-	return true;
+	return success;
 }
 
 static void format_regex_message(char *plain, const int sizeof_plain, char *html, const int sizeof_html, const char *type, const char *regex, const char *warning, const int dbindex)
@@ -893,7 +901,7 @@ static void format_connection_error(char *plain, const int sizeof_plain, char *h
 		return;
 	}
 
-	if(snprintf(html, sizeof_html, "Connection error (<strong>%s</strong>): %s (<strong>%s</strong>)", server, reason, error) > sizeof_html)
+	if(snprintf(html, sizeof_html, "Connection error (<strong>%s</strong>): %s (<strong>%s</strong>)", escaped_server, escaped_reason, escaped_error) > sizeof_html)
 		log_warn("format_connection_error(): Buffer too small to hold HTML message, warning truncated");
 
 	free(escaped_reason);
@@ -974,6 +982,7 @@ static void format_gravity_restored_message(char *plain, const int sizeof_plain,
 			return;
 
 		if(snprintf(html, sizeof_html, "Gravity database damaged, restore attempt <strong class=\"log-green\">successful</strong><br>The gravity database was restored using the automatic backup created on %s<br><br>Please check your filesystem for corruption, and your disk space for availability.", escaped_status) > sizeof_html)
+			log_warn("format_gravity_restored_message(): Buffer too small to hold HTML message, warning truncated");
 
 		free(escaped_status);
 	}
