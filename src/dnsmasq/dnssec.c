@@ -553,10 +553,14 @@ static int validate_rrset(time_t now, struct dns_header *header, size_t plen, in
 
 	   *ttl_out = ttl;
 	 }
-       
+
+      /* Don't trust rdlen not to be too small and give us a negative sig_len
+	 It has already been checked that it doesn't run us off the end
+	 of the packet. */
+      if ((sig_len = rdlen - (p - psav)) <= 0)
+	return STAT_BOGUS;
+
       sig = p;
-      sig_len = rdlen - (p - psav);
-              
       nsigttl = htonl(orig_ttl);
       
       hash->update(ctx, 18, psav);
@@ -1351,8 +1355,8 @@ static int prove_non_existence_nsec(struct dns_header *header, size_t plen, unsi
 		  break; /* finished checking */
 		}
 	      
-	      rdlen -= p[1];
-	      p +=  p[1];
+	      rdlen -= p[1] + 2;
+	      p +=  p[1] + 2;
 	    }
 	  
 	  return 0;
@@ -1515,8 +1519,8 @@ static int check_nsec3_coverage(struct dns_header *header, size_t plen, int dige
 			break; /* finished checking */
 		      }
 		    
-		    rdlen -= p[1];
-		    p +=  p[1];
+		    rdlen -= p[1] + 2;
+		    p +=  p[1] + 2;
 		  }
 		
 		return 1;
