@@ -123,7 +123,7 @@ static int redirect_root_handler(struct mg_connection *conn, void *input)
 		// If the "Host" is an IPv6 address, like [::1], parse until ] is found.
 		if (*host == '[')
 		{
-			char *pos = strchr(host, ']');
+			const char *pos = strchr(host, ']');
 			if (!pos)
 			{
 				// Malformed hostname starts with '[', but no ']' found
@@ -135,7 +135,7 @@ static int redirect_root_handler(struct mg_connection *conn, void *input)
 		}
 		else
 		{
-			char *pos = strchr(host, ':');
+			const char *pos = strchr(host, ':');
 			if (pos != NULL)
 			{
 				// A ':' separates hostname and port number
@@ -760,7 +760,7 @@ void http_init(void)
 		const char *opt = cJSON_GetStringValue(option);
 
 		// Split option into key and value at the first '='
-		char *equal_sign = strchr(opt, '=');
+		const char *equal_sign = strchr(opt, '=');
 		if(equal_sign == NULL)
 		{
 			log_err("Invalid option in webserver.advancedOpts: %s (missing '=')", opt);

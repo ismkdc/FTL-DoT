@@ -208,6 +208,9 @@
 #define memset(s, c, n) FTLmemset(s, c, n, __FILE__,  __FUNCTION__,  __LINE__)
 #define memcpy(dest, src, n) FTLmemcpy(dest, src, n, __FILE__,  __FUNCTION__,  __LINE__)
 #define memmove(dest, src, n) FTLmemmove(dest, src, n, __FILE__,  __FUNCTION__,  __LINE__)
+#ifdef strstr
+#undef strstr
+#endif
 #define strstr(haystack, needle) FTLstrstr(haystack, needle, __FILE__,  __FUNCTION__,  __LINE__)
 #define strcmp(s1, s2) FTLstrcmp(s1, s2, __FILE__,  __FUNCTION__,  __LINE__)
 #define strncmp(s1, s2, n) FTLstrncmp(s1, s2, n, __FILE__,  __FUNCTION__,  __LINE__)
