@@ -6,26 +6,7 @@
 # Load BATS libraries for enhanced testing capabilities
 bats_load_library 'bats-support'
 bats_load_library 'bats-assert'
-
-# In case of test failure post the whole output of the run command
-bats::on_failure() {
-    printf "\n"
-    printf "═══════════════════════════════════════════════════════════════════════════════\n"
-    printf "                              BATS TEST FAILURE DEBUG                         \n"
-    printf "═══════════════════════════════════════════════════════════════════════════════\n"
-    printf "\n"
-    printf "   TEST DESCRIPTION:\n"
-    printf "   %s\n" "${BATS_TEST_DESCRIPTION}"
-    printf "\n"
-    printf "   COMMAND EXECUTED:\n"
-    printf "   %s\n" "${BATS_RUN_COMMAND}"
-    printf "\n"
-    printf "   OUTPUT CAPTURED:\n"
-    printf "   %s\n" "${output}"
-    printf "\n"
-    printf "═══════════════════════════════════════════════════════════════════════════════\n"
-    printf "\n"
-}
+load 'bats_helper.bash'
 
 @test "No WARNING messages in FTL.log (besides known warnings)" {
   run bash -c 'grep "WARNING:" /var/log/pihole/FTL.log | grep -v -E "CAP_NET_ADMIN|CAP_NET_RAW|CAP_SYS_NICE|CAP_IPC_LOCK|CAP_CHOWN|CAP_NET_BIND_SERVICE|CAP_SYS_TIME|FTLCONF_|(negative DS reply without NS record received for ftl)|(nameserver 127.0.0.1 refused to do a recursive query)|API: Config item is invalid|API: Config item validation failed|API: Not found|API: Config items set via environment variables|API: Rate-limiting login attempts|API: You need to specify both|API: No request body data|API: Invalid request|API: Rate-limiting 2FA token requests|2FA code has already been used|API: Reused 2FA token"'

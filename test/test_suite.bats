@@ -4,6 +4,7 @@
 bats_load_library 'bats-support'
 bats_load_library 'bats-assert'
 bats_load_library 'bats-file'
+load 'bats_helper.bash'
 
 # Log the current test description to the FTL log at the start of each test.
 # `setup()` is run by bats before every `@test` block.
@@ -11,25 +12,6 @@ setup() {
   printf 'Starting test: %s\n' "$BATS_TEST_DESCRIPTION" >> /var/log/pihole/FTL.log
 }
 
-# In case of test failure post the whole output of the run command
-bats::on_failure() {
-    printf "\n"
-    printf "═══════════════════════════════════════════════════════════════════════════════\n"
-    printf "                              BATS TEST FAILURE DEBUG                         \n"
-    printf "═══════════════════════════════════════════════════════════════════════════════\n"
-    printf "\n"
-    printf "   TEST DESCRIPTION:\n"
-    printf "   %s\n" "${BATS_TEST_DESCRIPTION}"
-    printf "\n"
-    printf "   COMMAND EXECUTED:\n"
-    printf "   %s\n" "${BATS_RUN_COMMAND}"
-    printf "\n"
-    printf "   OUTPUT CAPTURED:\n"
-    printf "   %s\n" "${output}"
-    printf "\n"
-    printf "═══════════════════════════════════════════════════════════════════════════════\n"
-    printf "\n"
-}
 
 @test "Compare template and test TOML config files" {
   # We skip the first 5 lines of the files as they contain the version and
