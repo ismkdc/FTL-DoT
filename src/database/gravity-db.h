@@ -89,7 +89,7 @@ bool gravityDB_delFromTable(const enum gravity_list_type listtype, const cJSON* 
 bool gravityDB_edit_groups(const enum gravity_list_type listtype, cJSON *groups,
                            const tablerow *row, const char **message);
 
-time_t gravity_last_updated(void) __attribute__((pure));
+time_t gravity_last_updated(void);
 
 void gravityDB_dump_perf_stats(void);
 

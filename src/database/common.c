@@ -31,14 +31,16 @@
 #include "database/session-table.h"
 // assert()
 #include <assert.h>
+// _Atomic
+#include <stdatomic.h>
 
 bool DBdeleteoldqueries = false;
-static bool DBerror = false;
-static int dbopen_cnt = 0; // Number of times the database has been opened
+static _Atomic bool DBerror = false;
+static _Atomic int dbopen_cnt = 0; // Number of times the database has been opened
 
 bool __attribute__ ((pure)) FTLDBerror(void)
 {
-	return DBerror;
+	return atomic_load_explicit(&DBerror, memory_order_relaxed);
 }
 
 bool checkFTLDBrc(const int rc)
@@ -47,16 +49,16 @@ bool checkFTLDBrc(const int rc)
 	if(rc == SQLITE_CORRUPT)
 	{
 		log_warn("Database %s is damaged and cannot be used.", config.files.database.v.s);
-		DBerror = true;
+		atomic_store_explicit(&DBerror, true, memory_order_relaxed);
 	}
 	// Check if the database file is read-only
 	if(rc == SQLITE_READONLY)
 	{
 		log_warn("Database %s is read-only and cannot be used.", config.files.database.v.s);
-		DBerror = true;
+		atomic_store_explicit(&DBerror, true, memory_order_relaxed);
 	}
 
-	return DBerror;
+	return atomic_load_explicit(&DBerror, memory_order_relaxed);
 }
 
 void _dbclose(sqlite3 **db, const char *func, const int line, const char *file)
@@ -82,7 +84,7 @@ void _dbclose(sqlite3 **db, const char *func, const int line, const char *file)
 	if(db) *db = NULL;
 
 	// Decrement the number of open database connections
-	dbopen_cnt--;
+	atomic_fetch_sub_explicit(&dbopen_cnt, 1, memory_order_relaxed);
 }
 
 /**
@@ -137,7 +139,8 @@ int sqliteBusyCallback(void *ptr, int count)
 			return 0;
 		}
 	}
-	log_debug(DEBUG_DATABASE, "Database busy - waiting %d ms (dbopen: %d)", delay, dbopen_cnt);
+	log_debug(DEBUG_DATABASE, "Database busy - waiting %d ms (dbopen: %d)", delay,
+	          atomic_load_explicit(&dbopen_cnt, memory_order_relaxed));
 	usleep(delay * 1000); // Convert ms to us
 
 	// Return 1 to indicate that we will wait for the database to become
@@ -197,7 +200,7 @@ sqlite3* _dbopen(const bool readonly, const bool create, const char *func, const
 	}
 
 	// Increment the number of open database connections
-	dbopen_cnt++;
+	atomic_fetch_add_explicit(&dbopen_cnt, 1, memory_order_relaxed);
 
 	return db;
 }

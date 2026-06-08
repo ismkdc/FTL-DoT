@@ -1,30 +1,28 @@
-diff --git a/src/database/shell.c b/src/database/shell.c
-index 6280ebf6..a5e82f70 100644
 --- a/src/database/shell.c
 +++ b/src/database/shell.c
-@@ -126,6 +126,8 @@ typedef unsigned char u8;
- #endif
- #include <ctype.h>
+@@ -4474,6 +4474,8 @@
+ #include <assert.h>
+ #include <string.h>
  #include <stdarg.h>
 +// print_FTL_version()
 +#include "../log.h"
  
- #if !defined(_WIN32) && !defined(WIN32)
- # include <signal.h>
-@@ -32902,7 +32904,7 @@ static char *cmdline_option_value(int argc, char **argv, int i){
- #endif
- 
- #if SQLITE_SHELL_IS_UTF8
+ #ifndef SQLITE_AMALGAMATION
+ /* typedef sqlite3_uint64 u64; */
+@@ -36426,7 +36428,7 @@
+ **     fiddle_main          In Fiddle
+ **     sqlite3_shell        Other projects that use shell.c as a subroutine
+ */
 -int SQLITE_CDECL main(int argc, char **argv){
 +int SQLITE_CDECL sqlite3_shell_main(int argc, char **argv){
- #else
- int SQLITE_CDECL wmain(int argc, wchar_t **wargv){
-   char **argv;
-@@ -33656,6 +33658,7 @@ int SQLITE_CDECL wmain(int argc, wchar_t **wargv){
+ #ifdef SQLITE_DEBUG
+   sqlite3_int64 mem_main_enter = 0;
+ #endif
+@@ -37060,6 +37062,7 @@
      if( stdin_is_interactive ){
        char *zHome;
        char *zHistory;
 +      print_FTL_version();
-       sqlite3_fprintf(stdout,
+       cli_printf(stdout,
              "SQLite version %s %.19s\n" /*extra-version-info*/
              "Enter \".help\" for usage hints.\n",

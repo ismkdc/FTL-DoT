@@ -28,6 +28,9 @@ Usage:
 """
 
 import concurrent.futures
+import base64
+import hashlib
+import hmac
 import re
 import threading
 import time
@@ -39,6 +42,8 @@ PASSWORD = "stress-test-pw"
 NUM_SESSIONS = 14          # close to max_sessions default (16)
 BURST_ROUNDS = 50          # barrier bursts per test
 WORKERS = 30               # concurrent threads per burst
+TOTP_WORKERS = 12          # enough parallelism to exercise the race path
+TOTP_BURSTS = 2            # keep runtime short while still hitting concurrency
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -58,7 +63,16 @@ def _login(pw, timeout=10):
         f"{FTL_URL}/api/auth", json={"password": pw}, timeout=timeout)
 
 
+def _login_with_totp(pw, code, timeout=10):
+    return requests.post(
+        f"{FTL_URL}/api/auth",
+        json={"password": pw, "totp": code}, timeout=timeout)
+
+
 def _login_rate_limited(pw, timeout=10):
+    r = _login(pw, timeout=timeout)
+    if r.status_code != 429:
+        return r
     for _ in range(30):
         r = _login(pw, timeout=timeout)
         if r.status_code != 429:
@@ -71,6 +85,48 @@ def _check(sid, timeout=5):
     return requests.get(
         f"{FTL_URL}/api/auth",
         headers={"X-FTL-SID": sid}, timeout=timeout)
+
+
+def _set_totp_secret(secret, sid, timeout=20):
+    r = requests.patch(
+        f"{FTL_URL}/api/config/webserver/api/totp_secret",
+        json={"config": {"webserver": {"api": {"totp_secret": secret}}}},
+        headers={"X-FTL-SID": sid}, timeout=timeout,
+    )
+    assert r.status_code == 200, f"set TOTP secret: {r.status_code} {r.text}"
+
+
+def _totp_code(secret, now=None):
+    if now is None:
+        now = time.time()
+    key = base64.b32decode(secret, casefold=True)
+    counter = int(now // 30)
+    digest = hmac.new(key, counter.to_bytes(8, "big"), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    binary = ((digest[offset] & 0x7F) << 24) | (
+        (digest[offset + 1] & 0xFF) << 16) | (
+        (digest[offset + 2] & 0xFF) << 8) | (
+        digest[offset + 3] & 0xFF)
+    return binary % 1_000_000
+
+
+def _login_with_totp_rate_limited(secret, pw=PASSWORD, timeout=10):
+    r = _login_with_totp(pw, _totp_code(secret), timeout=timeout)
+    if r.status_code == 200 or r.status_code not in (401, 429):
+        return r
+    for _ in range(30):
+        r = _login_with_totp(pw, _totp_code(secret), timeout=timeout)
+        if r.status_code == 200:
+            return r
+        if r.status_code not in (401, 429):
+            return r
+        time.sleep(1)
+    return r
+
+
+def _wait_for_next_totp_window():
+    # Avoid retrying a known-reused token for up to 30 seconds during cleanup.
+    time.sleep((30 - (int(time.time()) % 30)) + 1)
 
 
 def _logout(sid, timeout=5):
@@ -183,6 +239,75 @@ def teardown_module(_mod):
 
 
 # ── tests ─────────────────────────────────────────────────────────────────
+
+class TestParallelTOTP:
+    """Concurrent TOTP logins should stay stable and never crash FTL.
+
+    This exercises the same code path that validates TOTP under request
+    parallelism to guard against races around shared TOTP state.
+    """
+
+    def test_concurrent_totp_logins_remain_stable(self):
+        secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+
+        # Login first (without TOTP yet) and enable TOTP.
+        r = _login_rate_limited(PASSWORD)
+        assert r.status_code == 200, f"setup login failed: {r.status_code}"
+        setup_sid = r.json()["session"]["sid"]
+        _set_totp_secret(secret, setup_sid)
+
+        observed_success = False
+
+        try:
+            for _ in range(TOTP_BURSTS):
+                code = _totp_code(secret)
+                barrier = threading.Barrier(TOTP_WORKERS, timeout=10)
+                statuses = []
+
+                def fire(_barrier=barrier, _code=code):
+                    try:
+                        _barrier.wait()
+                    except threading.BrokenBarrierError:
+                        return None
+                    try:
+                        return _login_with_totp(PASSWORD, _code, timeout=8).status_code
+                    except requests.ConnectionError:
+                        return "CRASH"
+
+                with concurrent.futures.ThreadPoolExecutor(TOTP_WORKERS) as pool:
+                    futs = [pool.submit(fire) for _ in range(TOTP_WORKERS)]
+                    for f in concurrent.futures.as_completed(futs):
+                        statuses.append(f.result())
+
+                if any(status == "CRASH" for status in statuses):
+                    _assert_alive("parallel TOTP login burst")
+
+                bad = [s for s in statuses if s not in (None, 200, 401, 429, "CRASH")]
+                assert not bad, f"Unexpected status codes in TOTP burst: {bad}"
+
+                # TOTP codes are single-use by design, so at most one concurrent
+                # request should authenticate with a shared token.
+                successes = sum(1 for s in statuses if s == 200)
+                assert successes <= 1, f"Expected <=1 successful TOTP login, got {successes}"
+                observed_success = observed_success or successes == 1
+
+            _assert_alive("parallel TOTP login test")
+            assert observed_success, "Never observed a successful TOTP login"
+        finally:
+            # totp_secret is write-only and invalidates sessions when changed,
+            # so obtain a fresh TOTP session using the next token window.
+            _wait_for_next_totp_window()
+            cleanup = _login_with_totp(PASSWORD, _totp_code(secret), timeout=10)
+            assert cleanup is not None
+            if cleanup.status_code == 200:
+                sid = cleanup.json().get("session", {}).get("sid")
+                assert sid, "cleanup login returned no SID"
+                _set_totp_secret("", sid)
+            else:
+                _assert_alive("parallel TOTP cleanup")
+                raise AssertionError(
+                    f"Unable to obtain TOTP session for cleanup: {cleanup.status_code}"
+                )
 
 class TestSetCookieRace:
     """pi_hole_extra_headers is a global char[1024] written by

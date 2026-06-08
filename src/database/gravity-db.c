@@ -33,6 +33,8 @@
 #include "files.h"
 // sqliteBusyCallback()
 #include "common.h"
+// pthread_mutex_t
+#include <pthread.h>
 
 // Prefix of interface names in the client table
 #define INTERFACE_SEP ":"
@@ -62,7 +64,11 @@ static size_t last_bound_denylist = 0;
 
 // Private variables
 static sqlite3 *gravity_db = NULL;
-static sqlite3_stmt* table_stmt = NULL;
+// Used by helper paths that prepare/step/finalize via gravityDB_finalizeTable().
+// Must be per-thread because civetweb workers execute API handlers concurrently.
+// A process-global statement pointer lets one worker overwrite/finalize another
+// worker's active statement, leading to use-after-free and random SIGSEGV.
+static _Thread_local sqlite3_stmt* table_stmt = NULL;
 bool gravityDB_opened = false;
 static bool gravity_abp_format = false;
 static bool gravity_has_antigravity = false;
@@ -2986,7 +2992,9 @@ void check_restored_gravity(void)
 	sqlite3_finalize(query_stmt);
 }
 
+// Shared between the DB thread and API/status readers
 static sqlite3_int64 last_updated = -1;
+static pthread_mutex_t last_updated_lock = PTHREAD_MUTEX_INITIALIZER;
 bool gravity_updated(void)
 {
 	bool changed = false;
@@ -3047,18 +3055,21 @@ bool gravity_updated(void)
 	const sqlite3_int64 updated = sqlite3_column_int64(query_stmt, 0);
 
 	// Check if timestamp has changed
-	if(last_updated == -1)
+	pthread_mutex_lock(&last_updated_lock);
+	const sqlite3_int64 prev_updated = last_updated;
+	if(prev_updated == -1)
 	{
 		// First run, set last_updated
 		last_updated = updated;
 	}
-	else if(last_updated < updated)
+	else if(prev_updated < updated)
 	{
 		// Gravity database has been updated
 		last_updated = updated;
 		changed = true;
 		log_info("Gravity database has been updated, reloading now");
 	}
+	pthread_mutex_unlock(&last_updated_lock);
 
 	// Finalize statement
 	sqlite3_finalize(query_stmt);
@@ -3069,7 +3080,11 @@ bool gravity_updated(void)
 	return changed;
 }
 
-time_t __attribute__((pure)) gravity_last_updated(void)
+// Thread-safe getter for the last updated timestamp of the gravity database
+time_t gravity_last_updated(void)
 {
-	return last_updated > 0 ? (time_t)last_updated : 0;
+	pthread_mutex_lock(&last_updated_lock);
+	const sqlite3_int64 updated = last_updated;
+	pthread_mutex_unlock(&last_updated_lock);
+	return updated > 0 ? (time_t)updated : 0;
 }
