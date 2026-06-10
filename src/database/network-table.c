@@ -1791,11 +1791,20 @@ static bool getMACVendor(const char *hwaddr, char vendor[MAXVENDORLEN])
 		return false;
 	}
 
-	// Only keep "XX:YY:ZZ" (8 characters)
-	char hwaddrshort[9];
-	strncpy(hwaddrshort, hwaddr, 8);
-	hwaddrshort[8] = '\0';
-	const char querystr[] = "SELECT vendor FROM macvendor WHERE mac LIKE ?;";
+	// Match the most specific IEEE assignment, not just the 24-bit OUI. Many
+	// OUIs are sub-divided into smaller MA-M (/28) and MA-S / IAB (/36) blocks,
+	// which the macvendor table stores in Wireshark manuf form (e.g.
+	// "34:E1:D1:80/28", "00:1B:C5:00:00/36"); the 24-bit prefix of such a block
+	// resolves only to "IEEE Registration Authority" (or to no row at all).
+	// hwaddr is a 17-char colon MAC (guaranteed by the length check above), so
+	// we reconstruct the candidate /24, /28 and /36 keys from it and let the
+	// longest match win - additive, requiring no change to the database itself.
+	const char querystr[] =
+		"SELECT vendor FROM macvendor WHERE mac IN ("
+		"substr(upper(?1),1,8),"                                   /* /24: 34:E1:D1        */
+		"substr(upper(?1),1,9)||substr(upper(?1),10,1)||'0/28',"   /* /28: 34:E1:D1:80/28  */
+		"substr(upper(?1),1,12)||substr(upper(?1),13,1)||'0/36'"   /* /36: 00:1B:C5:00:00/36 */
+		") ORDER BY length(mac) DESC LIMIT 1;";
 
 	sqlite3_stmt *stmt = NULL;
 	rc = sqlite3_prepare_v2(macvendor_db, querystr, -1, &stmt, NULL);
@@ -1805,11 +1814,11 @@ static bool getMACVendor(const char *hwaddr, char vendor[MAXVENDORLEN])
 		goto getMACVendor_end;
 	}
 
-	// Bind hwaddrshort to prepared statement
-	if((rc = sqlite3_bind_text(stmt, 1, hwaddrshort, -1, SQLITE_STATIC)) != SQLITE_OK)
+	// Bind the full MAC; the candidate prefixes are derived in SQL above
+	if((rc = sqlite3_bind_text(stmt, 1, hwaddr, -1, SQLITE_STATIC)) != SQLITE_OK)
 	{
-		log_err("getMACVendor(\"%s\" -> \"%s\"): Failed to bind hwaddrshort: %s",
-		        hwaddr, hwaddrshort, sqlite3_errstr(rc));
+		log_err("getMACVendor(\"%s\"): Failed to bind hwaddr: %s",
+		        hwaddr, sqlite3_errstr(rc));
 		goto getMACVendor_end;
 	}
 
