@@ -1996,10 +1996,10 @@ void receive_query(struct listener *listen, time_t now)
     if (fwd_flags & FREC_HAS_PHEADER)
     {
       if (ede_len > 0) // Add EDNS0 option EDE if applicable
-	n = add_pseudoheader(header, n, ((unsigned char *) header) + udp_size,
+	n = add_pseudoheader(header, n, udp_size,
 			     EDNS0_OPTION_EDE, ede_data, ede_len, do_bit, 0);
     else
-	n = add_pseudoheader(header, n, ((unsigned char *) header) + udp_size,
+	n = add_pseudoheader(header, n, udp_size,
 			     0, NULL, 0, do_bit, 0);
     }
     send_from(listen->fd, option_bool(OPT_NOWILD) || option_bool(OPT_CLEVERBIND),
@@ -2713,10 +2713,10 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 		if (have_pseudoheader && m > 0)
 		{
 		  if (ede_len > 0) // Add EDNS0 option EDE if applicable
-		    m = add_pseudoheader(out_header, m, ((unsigned char *) out_header) + 65536,
+		    m = add_pseudoheader(out_header, m, 65536,
 		                         EDNS0_OPTION_EDE, ede_data, ede_len, do_bit, 0);
 		  else
-		    m = add_pseudoheader(out_header, m, ((unsigned char *) out_header) + 65536,
+		    m = add_pseudoheader(out_header, m, 65536,
 		                         0, NULL, 0, do_bit, 0);
 		}
 	      }
