@@ -716,6 +716,50 @@ setup() {
   [[ ${lines[0]} == "/etc/pihole/pihole-FTL.db: SQLite 3.x database"* ]]
 }
 
+@test "MAC vendor lookup resolves MA-L, MA-M and MA-S blocks (longest prefix)" {
+  # The macvendor table stores Wireshark manuf keys verbatim: a plain "XX:XX:XX"
+  # for /24 (MA-L) and a masked form for the sub-divided blocks, e.g.
+  # "34:E1:D1:80/28" (MA-M) and "00:1B:C5:00:00/36" (MA-S). Seed a small db in
+  # that exact format.
+  DB=/tmp/macvendor_test.db
+  rm -f "${DB}"
+  ./pihole-FTL sqlite3 "${DB}" "CREATE TABLE macvendor (mac TEXT NOT NULL, vendor TEXT NOT NULL, PRIMARY KEY (mac));"
+  ./pihole-FTL sqlite3 "${DB}" "INSERT INTO macvendor (mac, vendor) VALUES ('98:48:27','Tp-Link'),('34:E1:D1:80/28','Hubitat'),('34:E1:D1:00/28','Tianjin Sublue'),('00:1B:C5:00:00/36','Converging Systems');"
+
+  # Mirrors the longest-prefix query used by getMACVendor(): reconstruct the
+  # candidate /24, /28 and /36 keys from the MAC and let the longest match win.
+  _macvendor_lookup() {
+    ./pihole-FTL sqlite3 "${DB}" "SELECT vendor FROM macvendor WHERE mac IN (substr(upper('${1}'),1,8),substr(upper('${1}'),1,9)||substr(upper('${1}'),10,1)||'0/28',substr(upper('${1}'),1,12)||substr(upper('${1}'),13,1)||'0/36') ORDER BY length(mac) DESC LIMIT 1;"
+  }
+
+  # MA-L (/24)
+  run _macvendor_lookup "98:48:27:c4:2f:f2"
+  printf "%s\n" "${lines[@]}"
+  [[ "${lines[0]}" == "Tp-Link" ]]
+
+  # MA-M (/28): the bare 24-bit OUI 34:E1:D1 has no row of its own
+  run _macvendor_lookup "34:e1:d1:80:76:de"
+  printf "%s\n" "${lines[@]}"
+  [[ "${lines[0]}" == "Hubitat" ]]
+
+  # A different MA-M (/28) under the same 24-bit parent resolves independently
+  run _macvendor_lookup "34:e1:d1:00:11:22"
+  printf "%s\n" "${lines[@]}"
+  [[ "${lines[0]}" == "Tianjin Sublue" ]]
+
+  # MA-S (/36)
+  run _macvendor_lookup "00:1b:c5:00:00:42"
+  printf "%s\n" "${lines[@]}"
+  [[ "${lines[0]}" == "Converging Systems" ]]
+
+  # Unknown OUI: no match
+  run _macvendor_lookup "de:ad:be:ef:00:01"
+  printf "%s\n" "${lines[@]}"
+  [[ -z "${lines[0]}" ]]
+
+  rm -f "${DB}"
+}
+
 @test "Test fail on invalid CLI argument" {
   run bash -c './pihole-FTL abc'
   printf "%s\n" "${lines[@]}"
