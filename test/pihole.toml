@@ -1050,7 +1050,7 @@
     # FTL (typically 'pihole'). This option is only required when at least one of
     # webserver.port is TLS. The file must be in PEM format, and it must have both,
     # private key and certificate (the *.pem file created must contain a 'CERTIFICATE'
-    # section as well as a 'RSA PRIVATE KEY' section).
+    # section as well as a 'PRIVATE KEY' section).
     #
     # The *.pem file can be created using `cp server.crt server.pem && cat server.key >>
     # server.pem` if you have these files instead
