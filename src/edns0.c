@@ -369,7 +369,11 @@ void FTL_parse_pseudoheaders(unsigned char *pheader, const size_t plen)
 				char *pp = pretty_payload;
 				for(unsigned int j = 0; j < optlen; j++)
 					pp += sprintf(pp, "0x%02X ", payload[j]);
-				pretty_payload[optlen*5 - 1] = '\0'; // Truncate away the trailing whitespace
+
+				// Truncate away the trailing whitespace
+				if(optlen)
+					pretty_payload[optlen*5 - 1] = '\0';
+
 				log_debug(DEBUG_EDNS0, "CPE-ID (payload size %u): \"%s\" (%s)",
 				     optlen, payload, pretty_payload);
 				free(pretty_payload);
