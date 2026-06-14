@@ -97,16 +97,52 @@ check_crash() {
   # Run the intentional-crash subcommand and capture combined stdout+stderr.
   # The process exits non-zero (killed by SIGSEGV), so we suppress the error.
   output="$(./pihole-FTL crash 2>&1 || true)"
-  if echo "$output" | grep -q "FTL crashed"; then
-    if echo "$output" | grep -q "Backtrace ("; then
-      echo "Crash handler test: OK (crash handler invoked, backtrace generated)"
-    else
-      # Handler ran but no backtrace — warn rather than fail.
-      # This can happen if addr2line is absent or the binary has no debug info.
-      echo "Crash handler test: WARNING (crash handler invoked, no backtrace)"
-    fi
-  else
+  if ! echo "$output" | grep -q "FTL crashed"; then
     echo "Crash handler test: FAILED (FTL crash handler was not invoked)"
+    okay=false
+    return
+  fi
+  if ! echo "$output" | grep -q "Backtrace ("; then
+    # Handler ran but no backtrace — warn rather than fail.
+    # This can happen if addr2line is absent or the binary has no debug info.
+    echo "Crash handler test: WARNING (crash handler invoked, no backtrace)"
+    return
+  fi
+  echo "Crash handler test: OK (crash handler invoked, backtrace generated)"
+
+  # On x86_64/aarch64 the crash backtrace must be collected from the
+  # interrupted signal context (the preferred frame-pointer walk), not the
+  # _Unwind_Backtrace fallback. Other architectures have no signal-context
+  # walker and legitimately use the fallback, so only assert it where it
+  # applies and runs natively/reliably (amd64 and local runs).
+  case "${CI_ARCH}" in
+    linux/amd64|"")
+      if echo "$output" | grep -q "from signal context"; then
+        echo "Crash backtrace source test: OK (collected from signal context)"
+      else
+        echo "Crash backtrace source test: FAILED (expected 'from signal context')"
+        echo "$output" | grep "Backtrace (" || true
+        okay=false
+      fi
+      ;;
+  esac
+}
+
+check_backtrace() {
+  # The 'backtrace' subcommand prints a backtrace without crashing and must
+  # exit cleanly.
+  output="$(./pihole-FTL backtrace 2>&1)"
+  status=$?
+  if [[ "${status}" -ne 0 ]]; then
+    echo "Backtrace subcommand test: FAILED (exit status ${status})"
+    okay=false
+    return
+  fi
+  if echo "$output" | grep -q "Backtrace (" && echo "$output" | grep -q -- "--- end of backtrace"; then
+    echo "Backtrace subcommand test: OK (backtrace generated)"
+  else
+    echo "Backtrace subcommand test: FAILED (no backtrace produced)"
+    echo "$output"
     okay=false
   fi
 }
@@ -186,6 +222,7 @@ else
 
 fi
 
+check_backtrace
 check_crash
 
 if [[ "${okay}" == "false" ]]; then
