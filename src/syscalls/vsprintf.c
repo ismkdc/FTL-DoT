@@ -11,6 +11,7 @@
 #include "FTL.h"
 //#include "syscalls.h" is implicitly done in FTL.h
 #include "log.h"
+#include <limits.h> // INT_MAX
 
 #undef vsprintf
 int FTLvsprintf(const char *file, const char *func, const int line, char *__restrict__ buffer, const char *format, va_list args)
@@ -38,7 +39,11 @@ int FTLvsprintf(const char *file, const char *func, const int line, char *__rest
 		// Reset errno before trying to get the string
 		errno = 0;
 		// Do the actual string transformation
-		length = vsprintf(buffer, format, _args);
+		// Use vsnprintf with INT_MAX instead of vsprintf to avoid
+		// -Werror=stringop-overflow= on Alpine 3.24+ where the fortify
+		// headers wrap vsprintf as vsnprintf(buf, SIZE_MAX, ...) which
+		// exceeds the compiler's maximum object size check
+		length = vsnprintf(buffer, INT_MAX, format, _args);
 		// Copy errno into buffer before calling va_end()
 		_errno = errno;
 		va_end(_args);
