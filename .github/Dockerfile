@@ -19,7 +19,7 @@ ENV TERM=xterm
 # Monkeypatch BATS to remove duplicate output of starting and finished test
 # BATS uses ANSI escape codes to overwrite the line after the test has finished
 # This is not supported by Github Actions as it does not provide a TTY to the docker build container
-RUN sed -i '/buffer_with_truncation /d' /bats-core/libexec/bats-core/bats-format-pretty
+RUN sed -i '/buffer_with_truncation /d' /bats/bats-core/libexec/bats-core/bats-format-pretty
 
 # Build FTL
 # Remove possible old build files
