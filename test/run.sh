@@ -117,8 +117,14 @@ RET=0
 # Prepare BATS
 if [ -z "$BATS" ]; then
   mkdir -p test/libs
-  git clone --depth=1 --quiet https://github.com/bats-core/bats-core test/libs/bats > /dev/null
-  BATS=test/libs/bats/bin/bats
+  git clone --depth=1 --quiet https://github.com/bats-core/bats-core test/libs/bats-core > /dev/null
+  git clone --depth=1 --quiet https://github.com/bats-core/bats-support test/libs/bats-support > /dev/null
+  git clone --depth=1 --quiet https://github.com/bats-core/bats-assert  test/libs/bats-assert > /dev/null
+  git clone --depth=1 --quiet https://github.com/bats-core/bats-file    test/libs/bats-file > /dev/null
+  BATS=${PWD}/test/libs/bats-core/bin/bats
+  # BATS_LIB_PATH needs to be an absolute path for bats to find the libraries
+  BATS_LIB_PATH=${PWD}/test/libs/
+  export BATS_LIB_PATH
 fi
 
 # Run BATS test suite (includes DNS, regex, CLI, config tests;
