@@ -701,6 +701,52 @@ setup() {
   assert_line --index 0 "80o,443os,[::]:80o,[::]:443os"
 }
 
+@test "'pihole-FTL backtrace' generates a structured backtrace" {
+  run bash -c './pihole-FTL backtrace'
+  printf "%s\n" "${lines[@]}"
+  # This path generates a backtrace without crashing, so it exits cleanly
+  assert_success
+  # The header reports a frame count (and, for a real crash, the unwind source)
+  assert_line --regexp --index 0 '^Backtrace \([^)]*frames[^)]*\):$'
+  # At least the first two frames are collected
+  assert_output --partial "#0"
+  assert_output --partial "#1"
+  # The calling chain is symbolized (addr2line or the dladdr fallback): the
+  # 'backtrace' subcommand is reached via parse_args() from main()
+  assert_output --partial "parse_args"
+  assert_output --partial "main"
+  # The closing marker is present
+  assert_output --partial "--- end of backtrace"
+}
+
+@test "'pihole-FTL backtrace' resolves source locations when addr2line is present" {
+  if ! command -v addr2line >/dev/null 2>&1; then
+    skip "addr2line not installed; resolution-dependent assertion skipped"
+  fi
+  run bash -c './pihole-FTL backtrace'
+  printf "%s\n" "${lines[@]}"
+  assert_success
+  # parse_args() resolves to its project-relative source location
+  assert_output --partial "src/args.c"
+  # addr2line is available, so the 'not installed' hint must not be printed
+  refute_output --partial "addr2line is not installed"
+}
+
+@test "'pihole-FTL backtrace' prints resolve guidance when addr2line is unavailable" {
+  # Hide addr2line via an empty PATH (the binary itself is launched by an
+  # explicit relative path, so it still runs). The directly spawned addr2line
+  # child then fails to exec and exits 127, which must be reported as
+  # 'not installed' and every unresolved frame must get a copy-pasteable
+  # reproducer command.
+  run bash -c 'PATH="" ./pihole-FTL backtrace'
+  printf "%s\n" "${lines[@]}"
+  assert_success
+  assert_output --partial "Backtrace ("
+  assert_output --partial "addr2line is not installed"
+  assert_output --partial "unresolved frame"
+  assert_output --partial "addr2line -f -e"
+}
+
 # NOTE: Log validation (WARNING/ERROR/CRIT/DB checks) moved to the final
 # log scan in run.sh, which runs after both BATS and pytest complete.
 
