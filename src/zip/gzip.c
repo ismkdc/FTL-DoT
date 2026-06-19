@@ -111,7 +111,7 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
                     unsigned char **buffer_uncompressed, mz_ulong *size_uncompressed)
 {
 	// Check GZIP header (magic byte 1F 8B and compression algorithm deflate 08)
-	if(buffer_compressed[0] != 0x1F || buffer_compressed[1] != 0x8B)
+	if(size_compressed < 18u || buffer_compressed[0] != 0x1F || buffer_compressed[1] != 0x8B)
 	{
 		log_warn("This is not a valid GZIP stream");
 		return false;
@@ -160,7 +160,9 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 		for(unsigned int i = 0; i < 2; i++)
 			xlen |= buffer_compressed[10 + i] << (i * 8);
 		xlen = le16toh(xlen);
-		if(size_compressed < 12u + xlen)
+
+		// the extra fields should not overlap the CRC32/ISIZE fields
+		if(size_compressed < 12u + xlen + 8u)
 		{
 			log_warn("Invalid GZIP header");
 			return false;
@@ -191,11 +193,16 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 		//               arbitrarily long. We ignore it.
 		//
 		size_t i = 10;
-		while(i < size_compressed && buffer_compressed[i] != 0)
+		if(i >= size_compressed - 8)
+		{
+			log_warn("GZIP file name field overruns into the footer");
+			return false;
+		}
+		while(i < size_compressed - 8 && buffer_compressed[i] != 0)
 		{
 			i++;
 		}
-		if(i == size_compressed)
+		if(i == size_compressed - 8)
 		{
 			log_warn("File name is missing or invalid in GZIP header");
 			return false;
@@ -227,11 +234,16 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 		//               arbitrarily long. We ignore it.
 		//
 		size_t i = 10;
-		while(i < size_compressed && buffer_compressed[i] != 0)
+		if(i >= size_compressed - 8)
+		{
+			log_warn("GZIP file comment field overruns into the footer");
+			return false;
+		}
+		while(i < size_compressed - 8 && buffer_compressed[i] != 0)
 		{
 			i++;
 		}
-		if(i == size_compressed)
+		if(i == size_compressed - 8)
 		{
 			log_warn("File comment is missing or invalid in GZIP header");
 			return false;
