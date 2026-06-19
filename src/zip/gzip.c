@@ -247,7 +247,7 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 	// bytes of the file)
 	 *size_uncompressed = 0u;
 	for(unsigned int i = 0; i < 4; i++)
-		*size_uncompressed |= buffer_compressed[size_compressed - 4 + i] << (i * 8);
+		*size_uncompressed |= (mz_ulong)buffer_compressed[size_compressed - 4 + i] << (i * 8);
 	*size_uncompressed = le32toh(*size_uncompressed);
 	if(*size_uncompressed == 0 || *size_uncompressed > 0x10000000)
 	{
@@ -263,7 +263,7 @@ bool inflate_buffer(unsigned char *buffer_compressed, mz_ulong size_compressed,
 	// file)
 	uint32_t crc = 0u;
 	for(unsigned int i = 0; i < 4; i++)
-		crc |= buffer_compressed[size_compressed - 8 + i] << (i * 8);
+		crc |= (uint32_t)buffer_compressed[size_compressed - 8 + i] << (i * 8);
 	crc = le32toh(crc);
 
 	// ZLIB trailer/footer is an Adler-32 checksum of the uncompressed data.
