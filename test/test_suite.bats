@@ -1800,6 +1800,11 @@ setup() {
   assert_success
 }
 
+@test "TAR parser regression harness" {
+  run python3 test/tar_regression.py
+  assert_success
+}
+
 @test "SHA256 checksum working" {
   run bash -c './pihole-FTL sha256sum test/test.pem'
   assert_line --index 0 "ce4c01340ef46bf3bc26831f7c53763d57c863528826aa795f1da5e16d6e7b2d  test/test.pem"
