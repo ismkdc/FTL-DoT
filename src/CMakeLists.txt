@@ -381,19 +381,26 @@ add_subdirectory(ntp)
 # test runs the resulting binary. It is deliberately NOT given the strict
 # EXTRAWARN/-Werror flags applied to FTL code, matching the lighter warning
 # level the test was written against.
-add_executable(tar_regression
-        ${PROJECT_SOURCE_DIR}/test/tar_regression.c
-        $<TARGET_OBJECTS:cJSON>)
-target_include_directories(tar_regression PRIVATE ${PROJECT_SOURCE_DIR}/src)
+#
+# Only built on request so an ordinary build does not produce it: `./build.sh
+# test` enables it for local runs, and the CI Dockerfile passes
+# -DBUILD_TAR_REGRESSION=ON at build time (the test step runs the binary later).
+option(BUILD_TAR_REGRESSION "Build the tar parser regression test harness" OFF)
+if(BUILD_TAR_REGRESSION)
+    add_executable(tar_regression
+            ${PROJECT_SOURCE_DIR}/test/tar_regression.c
+            $<TARGET_OBJECTS:cJSON>)
+    target_include_directories(tar_regression PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
-# Optional ASan/UBSan instrumentation for local runs:
-#   ./build.sh "-DTAR_REGRESSION_SANITIZE=ON"
-# Off by default so the static (musl) CI builds, where the sanitizer runtime
-# is not available, keep linking.
-option(TAR_REGRESSION_SANITIZE "Build the tar regression test with ASan/UBSan" OFF)
-if(TAR_REGRESSION_SANITIZE)
-    target_compile_options(tar_regression PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_link_options(tar_regression PRIVATE -fsanitize=address,undefined)
+    # Optional ASan/UBSan instrumentation for local runs:
+    #   ./build.sh "-DTAR_REGRESSION_SANITIZE=ON" test
+    # Off by default so the static (musl) CI builds, where the sanitizer runtime
+    # is not available, keep linking.
+    option(TAR_REGRESSION_SANITIZE "Build the tar regression test with ASan/UBSan" OFF)
+    if(TAR_REGRESSION_SANITIZE)
+        target_compile_options(tar_regression PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(tar_regression PRIVATE -fsanitize=address,undefined)
+    endif()
 endif()
 
 # optional headers - may depend on type or version of the C standard library

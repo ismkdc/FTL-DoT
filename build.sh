@@ -105,6 +105,16 @@ if [[ -n "${debug}" ]]; then
     fi
 fi
 
+# If we are asked to run tests, also build the tar parser regression harness.
+# It is gated behind a CMake option so ordinary builds do not produce it.
+if [[ -n "${test}" ]]; then
+    if [[ -n "${cmake_args}" ]]; then
+        cmake_args="${cmake_args} -DBUILD_TAR_REGRESSION=ON"
+    else
+        cmake_args="-DBUILD_TAR_REGRESSION=ON"
+    fi
+fi
+
 # If we are in dev mode, we want to build, install, restart, and tail the logs
 # by default
 if [[ -n "${dev}" ]]; then
