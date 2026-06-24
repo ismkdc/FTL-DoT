@@ -17,22 +17,21 @@ FTL_URL = "http://127.0.0.1"
 
 
 # ---------------------------------------------------------------------------
-# Upstream DNSSEC detection
+# Expected query counters
 # ---------------------------------------------------------------------------
 # The bats test suite queries mask.icloud.com via an allowlisted client, which
-# forwards the query upstream.  The CNAME chain crosses icloud.com and
-# apple-dns.net.  When both zones carry DS records (DNSSEC-signed), dnsmasq
-# fires two extra DNSKEY validation queries, shifting several counters by +2.
-#
-# These constants are populated by the session-scoped detect_upstream_dnssec
-# fixture in conftest.py (which waits for pdns_recursor to be available and
-# probes DS records with retry/backoff).  The values below are safe defaults
-# for the non-DNSSEC case and are overwritten before any test runs.
+# forwards the query upstream.  The mask.icloud.com -> mask.apple-dns.net CNAME
+# chain is served by the local (unsigned) PowerDNS authoritative server (see
+# test/pdns/setup.sh and recursor.conf) instead of being recursed to the public
+# internet.  This keeps the resolution hermetic and the query counts below
+# deterministic — previously they drifted by +2 whenever Apple toggled DNSSEC
+# signing on these zones, which made the suite flaky (see issue #2908 / PR
+# #2845).  If you add or remove queries in test_suite.bats, update these.
 
-TOTAL       = 135
-FORWARDED   = 45
-DNSKEY      = 7
-TOP_DOMAIN  = "localhost"
+TOTAL       = 137
+FORWARDED   = 47
+DNSKEY      = 9
+TOP_DOMAIN  = "."
 
 
 # ---------------------------------------------------------------------------

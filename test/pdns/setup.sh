@@ -135,6 +135,17 @@ pdnsutil rrset add ftl. umbrella-multi.ftl. A 8.8.8.8
 pdnsutil rrset add ftl. null.ftl. A 0.0.0.0
 pdnsutil rrset add ftl. null.ftl. AAAA ::
 
+# Serve Apple's iCloud Private Relay domains locally (unsigned) instead of
+# recursing to the public internet. The bats suite resolves mask.icloud.com
+# through an allowlisted client; hosting the mask.icloud.com -> mask.apple-dns.net
+# CNAME chain here keeps the query counts deterministic regardless of whether
+# Apple currently DNSSEC-signs these zones (see test/api/test_api.py).
+pdnsutil zone create icloud.com ns1.ftl
+pdnsutil rrset add icloud.com. mask.icloud.com. CNAME mask.apple-dns.net.
+pdnsutil rrset add icloud.com. mask-h2.icloud.com. CNAME mask.apple-dns.net.
+pdnsutil zone create apple-dns.net ns1.ftl
+pdnsutil rrset add apple-dns.net. mask.apple-dns.net. A 172.224.181.14
+
 # Create valid internal DNSSEC zone
 pdnsutil zone create dnssec ns1.ftl
 pdnsutil rrset add dnssec. a.dnssec. A 192.168.4.1
