@@ -374,6 +374,28 @@ add_subdirectory(config)
 add_subdirectory(tools)
 add_subdirectory(ntp)
 
+# Standalone regression harness for the in-memory tar parser (zip/tar.c).
+# It #includes tar.c directly to reach the file-internal helpers, stubs the
+# few FTL* syscall wrappers tar.c needs (instead of linking syscalls/log) and
+# reuses the cJSON object library. The "TAR parser regression harness" bats
+# test runs the resulting binary. It is deliberately NOT given the strict
+# EXTRAWARN/-Werror flags applied to FTL code, matching the lighter warning
+# level the test was written against.
+add_executable(tar_regression
+        ${PROJECT_SOURCE_DIR}/test/tar_regression.c
+        $<TARGET_OBJECTS:cJSON>)
+target_include_directories(tar_regression PRIVATE ${PROJECT_SOURCE_DIR}/src)
+
+# Optional ASan/UBSan instrumentation for local runs:
+#   ./build.sh "-DTAR_REGRESSION_SANITIZE=ON"
+# Off by default so the static (musl) CI builds, where the sanitizer runtime
+# is not available, keep linking.
+option(TAR_REGRESSION_SANITIZE "Build the tar regression test with ASan/UBSan" OFF)
+if(TAR_REGRESSION_SANITIZE)
+    target_compile_options(tar_regression PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(tar_regression PRIVATE -fsanitize=address,undefined)
+endif()
+
 # optional headers - may depend on type or version of the C standard library
 include(CheckIncludeFile)
 

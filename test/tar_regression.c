@@ -5,7 +5,14 @@
 #include <stdarg.h>
 #include <string.h>
 
-#include "zip/tar.h"
+// Include the implementation directly so the tests can exercise the
+// file-internal helpers (parse_tar_size(), tar_entry_span()) and reuse the
+// TAR_* layout constants instead of duplicating them here. tar.c pulls in
+// FTL.h, which redefines the libc string/memory calls to FTL* wrappers; the
+// #undef block below restores the plain libc names for the test code itself,
+// and the handful of FTL* wrappers tar.c needs are provided as thin stubs
+// further down.
+#include "zip/tar.c"
 
 #undef calloc
 #undef free
@@ -20,13 +27,12 @@
 #undef memcpy
 #undef memset
 
-#define TAR_BLOCK_SIZE 512
-#define TAR_NAME_SIZE 100
-#define TAR_SIZE_SIZE 12
-#define TAR_SIZE_OFFSET 124
+// Header-field offsets the parser never reads (so they are not defined in
+// tar.c) but which the fixtures below need to assemble valid headers. The
+// layout/size constants the parser does use - TAR_BLOCK_SIZE, TAR_NAME_SIZE,
+// TAR_SIZE_SIZE, TAR_SIZE_OFFSET, TAR_MAGIC_OFFSET - come from tar.c.
 #define TAR_CHECKSUM_OFFSET 148
 #define TAR_TYPEFLAG_OFFSET 156
-#define TAR_MAGIC_OFFSET 257
 #define TAR_VERSION_OFFSET 263
 
 static int failures = 0;
@@ -123,26 +129,6 @@ static void expect(const bool condition, const char *message)
 
 	fprintf(stderr, "FAIL: %s\n", message);
 	failures++;
-}
-
-static bool tar_entry_span(const size_t size, size_t *span)
-{
-	if (size % TAR_BLOCK_SIZE)
-	{
-		if (size > SIZE_MAX - TAR_BLOCK_SIZE * 2)
-			return false;
-
-		*span = (2 + size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
-	}
-	else
-	{
-		if (size > SIZE_MAX - TAR_BLOCK_SIZE)
-			return false;
-
-		*span = (1 + size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
-	}
-
-	return true;
 }
 
 static void write_size_octal(uint8_t *field, const size_t size)

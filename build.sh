@@ -194,6 +194,11 @@ if [[ -n "${install}" ]]; then
 else
     echo "Copying compiled pihole-FTL binary to repository root"
     cp pihole-FTL ../
+    # Copy the tar parser regression test binary alongside it so the
+    # "TAR parser regression harness" bats test can run it from the repo root
+    if [[ -f tar_regression ]]; then
+        cp tar_regression ../
+    fi
 fi
 
 # If we are asked to run tests, we do this here

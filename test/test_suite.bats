@@ -1801,7 +1801,7 @@ setup() {
 }
 
 @test "TAR parser regression harness" {
-  run python3 test/tar_regression.py
+  run ./tar_regression
   assert_success
 }
 
