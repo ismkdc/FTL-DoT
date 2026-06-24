@@ -105,13 +105,13 @@ if [[ -n "${debug}" ]]; then
     fi
 fi
 
-# If we are asked to run tests, also build the tar parser regression harness.
-# It is gated behind a CMake option so ordinary builds do not produce it.
+# If we are asked to run tests, also build the standalone regression harnesses.
+# They are gated behind CMake options so ordinary builds do not produce them.
 if [[ -n "${test}" ]]; then
     if [[ -n "${cmake_args}" ]]; then
-        cmake_args="${cmake_args} -DBUILD_TAR_REGRESSION=ON"
+        cmake_args="${cmake_args} -DBUILD_TAR_REGRESSION=ON -DBUILD_GZIP_REGRESSION=ON"
     else
-        cmake_args="-DBUILD_TAR_REGRESSION=ON"
+        cmake_args="-DBUILD_TAR_REGRESSION=ON -DBUILD_GZIP_REGRESSION=ON"
     fi
 fi
 
@@ -208,11 +208,13 @@ if [[ -n "${install}" ]]; then
 else
     echo "Copying compiled pihole-FTL binary to repository root"
     cp pihole-FTL ../
-    # Copy the tar parser regression test binary alongside it so the
-    # "TAR parser regression harness" bats test can run it from the repo root
-    if [[ -f tar_regression ]]; then
-        cp tar_regression ../
-    fi
+    # Copy the regression test binaries alongside it so the bats tests can run
+    # them from the repo root.
+    for regression_bin in tar_regression gzip_regression; do
+        if [[ -f "${regression_bin}" ]]; then
+            cp "${regression_bin}" ../
+        fi
+    done
 fi
 
 # If we are asked to run tests, we do this here

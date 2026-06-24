@@ -403,6 +403,34 @@ if(BUILD_TAR_REGRESSION)
     endif()
 endif()
 
+# Standalone regression harness for the in-memory gzip parser (zip/gzip.c).
+# It #includes gzip.c directly to reuse implementation-private constants, stubs
+# the few FTL* wrappers gzip.c needs, and reuses the miniz object library. The
+# "GZIP parser regression harness" bats test runs the resulting binary. It is
+# deliberately NOT given the strict EXTRAWARN/-Werror flags applied to FTL code,
+# matching the lighter warning level the test was written against.
+#
+# Only built on request so an ordinary build does not produce it: `./build.sh
+# test` enables it for local runs, and the CI Dockerfile passes
+# -DBUILD_GZIP_REGRESSION=ON at build time (the test step runs the binary later).
+option(BUILD_GZIP_REGRESSION "Build the gzip parser regression test harness" OFF)
+if(BUILD_GZIP_REGRESSION)
+    add_executable(gzip_regression
+            ${PROJECT_SOURCE_DIR}/test/gzip_regression.c
+            $<TARGET_OBJECTS:miniz>)
+    target_include_directories(gzip_regression PRIVATE ${PROJECT_SOURCE_DIR}/src)
+
+    # Optional ASan/UBSan instrumentation for local runs:
+    #   ./build.sh "-DGZIP_REGRESSION_SANITIZE=ON" test
+    # Off by default so the static (musl) CI builds, where the sanitizer runtime
+    # is not available, keep linking.
+    option(GZIP_REGRESSION_SANITIZE "Build the gzip regression test with ASan/UBSan" OFF)
+    if(GZIP_REGRESSION_SANITIZE)
+        target_compile_options(gzip_regression PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(gzip_regression PRIVATE -fsanitize=address,undefined)
+    endif()
+endif()
+
 # optional headers - may depend on type or version of the C standard library
 include(CheckIncludeFile)
 

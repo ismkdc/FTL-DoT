@@ -1,8 +1,9 @@
 # Generated binary
 pihole-FTL*
 
-# Generated tar parser regression test binary (built via ./build.sh test)
+# Generated standalone regression test binaries (built via ./build.sh test)
 /tar_regression
+/gzip_regression
 
 # Generated pihole.toml file
 pihole.toml
