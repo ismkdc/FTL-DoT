@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 // Include the implementation directly so the tests can exercise the
 // file-internal helpers (parse_tar_size(), tar_entry_span()) and reuse the
@@ -497,6 +500,54 @@ static int run_named_test(const char *name)
 	return 2;
 }
 
+// Run a single test in a forked child so a sanitizer abort (or any crash)
+// fails only that case instead of taking down the rest of the suite. This
+// restores the per-case isolation of the previous Python harness without
+// duplicating the parser: a single `./tar_regression` invocation still runs
+// every case under -DTAR_REGRESSION_SANITIZE=ON. The child prints its own
+// PASS/FAIL line via run_test(); the parent only reports cases that died by
+// signal, where run_test() never got to return.
+static int run_test_isolated(const struct tar_test *test)
+{
+	fflush(NULL);
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		// fork() is unavailable - fall back to running in-process. A
+		// sanitizer abort would still stop the suite here, but a clean
+		// build runs every case.
+		return run_test(test);
+	}
+
+	if (pid == 0) {
+		int rc = run_test(test);
+		// _exit() does not flush stdio, so drain the child's PASS/FAIL
+		// output (fully buffered when stdout is not a terminal) first.
+		fflush(NULL);
+		_exit(rc);
+	}
+
+	int wstatus = 0;
+	while (waitpid(pid, &wstatus, 0) < 0) {
+		if (errno != EINTR) {
+			fprintf(stderr, "FAIL %s: waitpid failed (%s)\n",
+			        test->name, strerror(errno));
+			return 1;
+		}
+	}
+
+	if (WIFEXITED(wstatus))
+		return WEXITSTATUS(wstatus) == 0 ? 0 : 1;
+
+	if (WIFSIGNALED(wstatus))
+		fprintf(stderr, "FAIL %s: terminated by signal %d\n",
+		        test->name, WTERMSIG(wstatus));
+	else
+		fprintf(stderr, "FAIL %s: abnormal termination\n", test->name);
+
+	return 1;
+}
+
 static void list_tests(void)
 {
 	for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++)
@@ -518,9 +569,12 @@ int main(int argc, char **argv)
 		return status;
 	}
 
+	// Full suite: isolate each case in its own process so one sanitizer
+	// abort does not hide the results of the cases that follow. Named
+	// cases (handled above) stay in-process for straightforward debugging.
 	int status = 0;
 	for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++)
-		if (run_test(&tests[i]) != 0)
+		if (run_test_isolated(&tests[i]) != 0)
 			status = 1;
 
 	return status;
