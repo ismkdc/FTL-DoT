@@ -180,7 +180,11 @@ fi
 mkdir -p "${builddir}"
 cd "${builddir}"
 if [[ -n ${cmake_args} ]]; then
-    cmake "${cmake_args}" ..
+    # Intentionally unquoted: cmake_args may hold several space-separated -D
+    # options (e.g. "-DA=1 -DB=2") that must reach CMake as separate arguments.
+    # Quoting would pass them as one -D value and silently drop all but the first.
+    # shellcheck disable=SC2086
+    cmake ${cmake_args} ..
 else
     cmake ..
 fi
