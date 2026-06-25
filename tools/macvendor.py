@@ -28,6 +28,9 @@ if len(sys.argv) > 1:
 		else:
 			with open(filename, "r", encoding="UTF-8") as f:
 				manuf = f.read().splitlines()
+	except UnicodeDecodeError as e:
+		print("Error: " + filename + " does not appear to be a valid UTF-8 file - " + str(e))
+		sys.exit(1)
 	except OSError as e:
 		print("Error: cannot access " + filename + " - " + str(e))
 		sys.exit(1)
@@ -39,7 +42,13 @@ else:
 	# User-Agent string to use for the request
 	USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36"
 	print("Downloading...")
-	manuf = requests.get(URL, headers={"User-Agent": USER_AGENT}).text.splitlines()
+	try:
+		resp = requests.get(URL, headers={"User-Agent": USER_AGENT}, timeout=30)
+		resp.raise_for_status()
+		manuf = resp.text.splitlines()
+	except requests.exceptions.RequestException as e:
+		print("Error: cannot download " + URL + " - " + str(e))
+		sys.exit(1)
 	print("...done")
 
 # Read file into memory and process lines
