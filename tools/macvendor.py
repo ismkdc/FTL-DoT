@@ -62,9 +62,9 @@ for line in manuf:
 		continue
 
 	# Remove quotation marks as these might interfere with later INSERT / UPDATE commands
-	line = re.sub("\'|\"","", line)
+	line = re.sub(r"\'|\"","", line)
 	# \s = Unicode whitespace characters, including [ \t\n\r\f\v]
-	cols = re.split("\s\s+|\t", line)
+	cols = re.split(r"\s\s+|\t", line)
 	# Use try/except chain to catch empty/incomplete lines without failing hard
 	try:
 		# Strip whitespace and quotation marks (some entries are incomplete and cause errors with the CSV parser otherwise)
