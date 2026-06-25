@@ -724,17 +724,34 @@ static bool get_client_groupids(clientsData *client)
 	bool got_name = false;
 	if(chosen_match_id < 0)
 	{
-		log_debug(DEBUG_CLIENTS, "Querying gravity database for host name of %s...", ip);
-
-		// Do the lookup
-		got_name = getNameFromIP(NULL, hostname, ip);
-		if(!got_name)
-			log_debug(DEBUG_CLIENTS, "--> No result.");
-
-		if(got_name && hostname[0] == '\0')
+		// Prefer the host name resolved in-memory for this client. The
+		// resolver thread fills client->namepos asynchronously and clears
+		// found_group when it changes (see resolveClients()), so reading
+		// it here avoids the one-DBinterval lag of the network_addresses
+		// table and re-resolves against the new name on the next query.
+		const char *clientName = getstr(client->namepos);
+		if(clientName != NULL && clientName[0] != '\0')
 		{
-			log_debug(DEBUG_CLIENTS, "Skipping empty host name lookup");
-			got_name = false;
+			strncpy(hostname, clientName, sizeof(hostname) - 1);
+			hostname[sizeof(hostname) - 1] = '\0';
+			got_name = true;
+			log_debug(DEBUG_CLIENTS, "Using in-memory host name \"%s\" of %s", hostname, ip);
+		}
+		else
+		{
+			// Fall back to the network table for clients FTL only knows
+			// from imported history (no live query yet, so no name)
+			log_debug(DEBUG_CLIENTS, "Querying gravity database for host name of %s...", ip);
+
+			got_name = getNameFromIP(NULL, hostname, ip);
+			if(!got_name)
+				log_debug(DEBUG_CLIENTS, "--> No result.");
+
+			if(got_name && hostname[0] == '\0')
+			{
+				log_debug(DEBUG_CLIENTS, "Skipping empty host name lookup");
+				got_name = false;
+			}
 		}
 	}
 
@@ -802,16 +819,33 @@ static bool get_client_groupids(clientsData *client)
 	bool got_iface = false;
 	if(chosen_match_id < 0)
 	{
-		log_debug(DEBUG_CLIENTS, "Querying gravity database for interface of %s...", ip);
+		// Prefer the interface the client's queries actually arrive on.
+		// It is recorded in-memory on the client's very first query (see
+		// _FTL_new_query()), so it is already available here without the
+		// one-DBinterval lag of the network_addresses table and lets
+		// interface-based group assignment apply from the first query on.
+		const char *clientIface = getstr(client->ifacepos);
+		if(clientIface != NULL && clientIface[0] != '\0')
+		{
+			strncpy(interface, clientIface, sizeof(interface) - 1);
+			interface[sizeof(interface) - 1] = '\0';
+			got_iface = true;
+			log_debug(DEBUG_CLIENTS, "Using in-memory interface "INTERFACE_SEP"%s of %s", interface, ip);
+		}
+		else
+		{
+			// Fall back to the network table for clients FTL only knows
+			// from imported history (no live query yet, so no interface)
+			log_debug(DEBUG_CLIENTS, "Querying gravity database for interface of %s...", ip);
 
-		// Do the lookup
-		got_iface = getIfaceFromIP(NULL, interface, ip);
+			got_iface = getIfaceFromIP(NULL, interface, ip);
 
-		if(!got_iface)
-			log_debug(DEBUG_CLIENTS, "--> No result.");
+			if(!got_iface)
+				log_debug(DEBUG_CLIENTS, "--> No result.");
 
-		if(got_iface && interface[0] == '\0')
-			log_debug(DEBUG_CLIENTS, "Skipping empty interface lookup");
+			if(got_iface && interface[0] == '\0')
+				log_debug(DEBUG_CLIENTS, "Skipping empty interface lookup");
+		}
 	}
 
 	// Check if we received a valid interface
@@ -1046,8 +1080,23 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 	log_debug(DEBUG_DATABASE, "Initializing gravity statements for %s", clientip);
 
 	// Get associated groups for this client (if defined)
-	if(!client->flags.found_group && !get_client_groupids(client))
-		return false;
+	if(!client->flags.found_group)
+	{
+		if(!get_client_groupids(client))
+			return false;
+
+		// The client's groups were just (re-)resolved. The per-client
+		// regex enable/disable state is cached separately (match_regex()
+		// reads a cached row) and must be rebuilt for the new groups,
+		// otherwise regex allow/deny decisions would keep using the
+		// previous groups after an identity change cleared found_group.
+		// This runs on the DNS query thread and, in check_domain_blocked(),
+		// before the in_regex() checks (in_denylist()/in_allowlist() call
+		// this first). It does not recurse: found_group is set now, so
+		// gravityDB_get_regex_client_groups() will not re-enter
+		// get_client_groupids().
+		reload_per_client_regex(client);
+	}
 
 	return true;
 }
@@ -1353,60 +1402,12 @@ static enum db_result domain_in_list(const char *domain, sqlite3_stmt *stmt, con
 
 void gravityDB_reload_groups(clientsData *client)
 {
-	// Rebuild client table statements (possibly from a different group set)
+	// Re-resolve the client's groups and rebuild its per-client regex
+	// state. finalize clears found_group so prepare re-runs
+	// get_client_groupids() and reload_per_client_regex() for the
+	// (possibly different) group set.
 	gravityDB_finalize_client_statements(client);
 	gravityDB_prepare_client_statements(client);
-
-	// Reload regex for this client (possibly from a different group set)
-	reload_per_client_regex(client);
-}
-
-// Re-check group membership for every client still within its initial 3-minute
-// identification window.
-//
-// A client may be identified by something that wasn't there on its first query
-// (hostname, MAC address, interface): FTL discovers those asynchronously —
-// parse_neighbor_cache() fills in ARP/MAC data from /proc/net/arp, and the
-// resolver thread fills in reverse-DNS hostnames. The 60/120/180-second
-// rechecks give those async sources time to arrive, then re-run
-// get_client_groupids() so the client lands in the correct group once its
-// identity is complete.
-//
-// Rechecking is periodic maintenance, not per-query work. The DB thread
-// iterates all clients once per second and does the check itself; any client
-// whose firstSeen clock has just crossed a 60/120/180-second mark gets reloaded
-// here, on the DB thread, rather than on whichever DNS query happens to land in
-// the boundary. Mature clients (reread_groups >= NUM_RECHECKS) short-circuit to
-// a single conditional per scan. Runs under the SHM lock because
-// gravityDB_reload_groups() mutates per-client state the DNS thread also reads.
-void gravityDB_recheck_clients(void)
-{
-	lock_shm();
-	const time_t now = time(NULL);
-	for(unsigned int clientID = 0; clientID < counters->clients; clientID++)
-	{
-		clientsData *client = getClient(clientID, true);
-		// Skip recycled client and mature clients (reread_groups >=
-		// NUM_RECHECKS) which have already been rechecked the maximum
-		// number of times. Also skip alias clients. They are meta-clients,
-		// only, and never issue queries themselves, so they also don't
-		// need to be rechecked.
-		if(client == NULL ||
-		   client->reread_groups >= NUM_RECHECKS ||
-		   client->flags.aliasclient)
-			continue;
-
-		const time_t diff = now - (time_t)client->firstSeen;
-		const unsigned char check_count = client->reread_groups + 1u;
-		if(diff > check_count * RECHECK_DELAY)
-		{
-			log_debug(DEBUG_CLIENTS, "Reloading client groups after %u seconds (%u%s check)",
-			          (unsigned int)diff, check_count, get_ordinal_suffix(check_count));
-			client->reread_groups++;
-			gravityDB_reload_groups(client);
-		}
-	}
-	unlock_shm();
 }
 
 enum db_result in_allowlist(const char *domain, DNSCacheData *dns_cache, clientsData *client)

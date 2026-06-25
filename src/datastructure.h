@@ -94,7 +94,6 @@ typedef struct {
 	// at offset 60 and straddle the cache line boundary (bytes 60–67),
 	// causing a split load on every client IP comparison.
 	unsigned char magic;
-	unsigned char reread_groups;
 	char hwlen;
 	unsigned char hwaddr[16]; // See DHCP_CHADDR_MAX in dnsmasq/dhcp-protocol.h
 	struct client_flags {

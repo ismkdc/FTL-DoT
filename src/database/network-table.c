@@ -1446,6 +1446,46 @@ void parse_neighbor_cache(sqlite3 *db)
 				numQueries = client->numQueriesARP;
 				totalQueries = client->count;
 				client_status[clientID] = CLIENT_ARP_COMPLETE;
+
+				// If the MAC the kernel reports for this IP
+				// just appeared or changed since we last
+				// resolved this client's group membership, the
+				// client may be stuck in the wrong (often
+				// default) group. FTL keys clients by IP, so an
+				// external DHCP server handing the same device a
+				// new IP creates a fresh client whose MAC is
+				// only learned here - after the client's first
+				// query already resolved it (to the default
+				// group). Nothing would otherwise re-trigger
+				// MAC-based group resolution (#2912).
+				//
+				// Detect that case by comparing the freshly
+				// learned MAC against the one stored on the
+				// client. If it differs, adopt the new MAC (so
+				// get_client_groupids() matches it from the
+				// in-memory ARP cache even before the
+				// network_addresses table catches up) and clear
+				// found_group so the client's next query
+				// re-resolves its groups and picks up any
+				// MAC-based group.
+				unsigned char newhw[6] = { 0 };
+				if(sscanf(hwaddr, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+				          &newhw[0], &newhw[1], &newhw[2],
+				          &newhw[3], &newhw[4], &newhw[5]) == 6 &&
+				   (client->hwlen != 6 ||
+				    memcmp(client->hwaddr, newhw, sizeof(newhw)) != 0))
+				{
+					log_debug(DEBUG_CLIENTS, "Network table: MAC behind %s changed to %s, re-resolving client groups",
+					          ip, hwaddr);
+
+					memcpy(client->hwaddr, newhw, sizeof(newhw));
+					client->hwlen = sizeof(newhw);
+
+					// Clearing found_group makes the next query
+					// for this client re-resolve its groups via
+					// get_client_groupids() (lazy re-resolution).
+					client->flags.found_group = false;
+				}
 			}
 			// else
 			// {

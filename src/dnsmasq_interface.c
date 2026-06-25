@@ -1085,6 +1085,10 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 					          clientIP, clientName, oldiface, interface);
 				}
 
+				// Adopt the new interface so the in-memory
+				// interface match in get_client_groupids()
+				// re-resolves against it
+				client->ifacepos = addstr(interface);
 				gravityDB_reload_groups(client);
 			}
 		}
@@ -1093,6 +1097,11 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 	// Set client MAC address from EDNS(0) information (if available)
 	if(config.dns.EDNS0ECS.v.b && edns && edns->mac_set)
 	{
+		// If the MAC just became known or changed, clear found_group so
+		// the next query re-resolves this client's groups - the MAC is
+		// one of the identities used for group assignment
+		if(client->hwlen != 6 || memcmp(client->hwaddr, edns->mac_byte, 6) != 0)
+			client->flags.found_group = false;
 		memcpy(client->hwaddr, edns->mac_byte, 6);
 		client->hwlen = 6;
 	}
@@ -1118,6 +1127,12 @@ bool _FTL_new_query(const unsigned int flags, const char *name,
 		client = getClient(clientID, true);
 		if(client != NULL)
 		{
+			// If a MAC was just learned (this runs only while it was
+			// still unknown), clear found_group so the next query
+			// re-resolves this client's groups using it
+			if(hwlen == 6 &&
+			   (client->hwlen != 6 || memcmp(client->hwaddr, hwaddr, sizeof(hwaddr)) != 0))
+				client->flags.found_group = false;
 			memcpy(client->hwaddr, hwaddr, sizeof(hwaddr));
 			client->hwlen = hwlen;
 		}

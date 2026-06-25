@@ -974,6 +974,12 @@ static void resolveClients(const bool onlynew, const bool force_refreshing)
 			// client_by_id on the next batch insertion of queries
 			client->flags.in_database = false;
 			client->db_id = 0;
+			// The host name is one of the identities a client can be
+			// matched on for group assignment. Now that it changed,
+			// clear found_group so the client's next query re-resolves
+			// its groups against the new name (lazy re-resolution via
+			// get_client_groupids()).
+			client->flags.found_group = false;
 		}
 		// Mark entry as not new
 		client->flags.new = false;

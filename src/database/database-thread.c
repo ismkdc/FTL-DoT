@@ -224,10 +224,6 @@ void *DB_thread(void *val)
 				// Reload gravity
 				set_event(RELOAD_GRAVITY);
 			}
-
-			// Re-check client group membership for any client still
-			// inside its 3-minute identification window
-			TIMED_DB_OP(gravityDB_recheck_clients());
 		}
 
 		// Intermediate cancellation-point
