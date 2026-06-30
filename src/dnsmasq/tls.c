@@ -437,7 +437,7 @@ static int dot_start_socket(struct server *serv)
         }
       serv->dot_state = DOT_STATE_HANDSHAKING;
     }
-  else if (errno == EINPROGRESS)
+  else if (errno == EINPROGRESS || errno == EAGAIN)
     {
       serv->dot_state = DOT_STATE_CONNECTING;
     }
