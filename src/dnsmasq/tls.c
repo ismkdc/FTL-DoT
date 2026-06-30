@@ -733,11 +733,10 @@ void dot_close(struct server *serv)
   if (!ctx)
     return;
 
-  int ret, tries = 0;
-  do {
-    ret = mbedtls_ssl_close_notify(&ctx->ssl);
-  } while ((ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
-            ret == MBEDTLS_ERR_SSL_WANT_READ) && ++tries < 10);
+  /* Best-effort TLS close_notify.  On a non-blocking socket WANT_READ/WANT_WRITE
+   * means "retry later", but retrying immediately in a spin loop never helps;
+   * the TCP RST from close() signals EOF to the peer either way. */
+  mbedtls_ssl_close_notify(&ctx->ssl);
 
   ctx->net.fd = -1;
 }
@@ -747,6 +746,25 @@ void dot_server_free(struct server *serv)
   struct tls_server_ctx *ctx = serv->tls_ctx;
   if (!ctx)
     return;
+
+  /* Close the TCP socket before freeing TLS resources.
+   *
+   * mbedtls_net_free() closes ctx->net.fd, but in DOT_STATE_CONNECTING
+   * dot_nb_handshake_setup() has not been called yet so ctx->net.fd == -1
+   * while serv->tcpfd is a live open socket — causing an FD leak on SIGHUP.
+   *
+   * By always closing serv->tcpfd here (and zeroing ctx->net.fd to prevent
+   * a double-close inside mbedtls_net_free), the leak is eliminated in all
+   * states regardless of whether a handshake was ever initiated. */
+  if (serv->tcpfd != -1)
+    {
+      if (ctx->net.fd == serv->tcpfd)
+        ctx->net.fd = -1; /* prevent double-close inside mbedtls_net_free */
+      else if (ctx->net.fd != -1)
+        dot_close(serv); /* send TLS close_notify on still-open ctx connection */
+      close(serv->tcpfd);
+      serv->tcpfd = -1;
+    }
 
   mbedtls_ssl_free(&ctx->ssl);
   if (ctx->sess_saved)

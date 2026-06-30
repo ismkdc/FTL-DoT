@@ -3392,6 +3392,22 @@ static void free_frec(struct frec *f)
   f->dependent = NULL;
   f->next_dependent = NULL;
 #endif
+
+#ifdef HAVE_MBEDTLS
+  /* Abort any DoT async op tied to this frec.  dot_advance() is only called
+   * when the DoT fd fires in the poll loop; an unresponsive upstream never
+   * fires, so without this the DoT slot would stay busy until OS TCP timeout
+   * (~75-127 s).  Aborting here releases the slot immediately on frec expiry. */
+  {
+    int _i;
+    for (_i = 0; _i < daemon->serverarraysz; _i++)
+      {
+        struct server *_s = daemon->serverarray[_i];
+        if (_s->tls_hostname && _s->dot_frec == f)
+          dot_abort(_s); /* closes connection, starts pending if any */
+      }
+  }
+#endif
 }
 
 
