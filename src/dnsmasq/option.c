@@ -3220,8 +3220,9 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 				   interface, "", NULL))
 	      ret_err(_("tls-server: failed to add server"));
 
-	    /* Tag the freshly-added server with the TLS hostname. */
-	    new_serv = daemon->servers;
+	    /* Tag the freshly-added server with the TLS hostname.
+	     * add_update_server() appends to the tail, so use servers_tail. */
+	    new_serv = daemon->servers_tail;
 	    if (new_serv)
 	      {
 		free(new_serv->tls_hostname);

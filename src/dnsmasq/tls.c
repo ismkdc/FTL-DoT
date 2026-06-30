@@ -46,7 +46,7 @@
 #endif
 
 /* Maximum retries on WANT_READ / WANT_WRITE before declaring I/O failure. */
-#define DOT_IO_RETRIES 50
+#define DOT_IO_RETRIES 5
 
 /* ALPN token required by RFC 7858 §4. */
 static const char *dot_alpn[] = { "dot", NULL };
@@ -238,10 +238,17 @@ int dot_handshake(struct server *serv)
   ret = mbedtls_ssl_get_session(&ctx->ssl, &ctx->session);
   ctx->sess_saved = (ret == 0) ? 1 : 0;
 
+  /* RFC 7858 §4: server MUST negotiate ALPN "dot". */
   const char *alpn = mbedtls_ssl_get_alpn_protocol(&ctx->ssl);
+  if (!alpn || strcmp(alpn, "dot") != 0)
+    {
+      my_syslog(LOG_ERR, "DoT: server %s did not negotiate ALPN 'dot' (got: %s) — aborting",
+                serv->tls_hostname, alpn ? alpn : "none");
+      return -1;
+    }
   my_syslog(LOG_DEBUG|MS_DEBUG,
-            "DoT: TLS handshake OK with %s (resumed=%d, ALPN=%s)",
-            serv->tls_hostname, ctx->sess_saved, alpn ? alpn : "none");
+            "DoT: TLS handshake OK with %s (resumed=%d, ALPN=dot)",
+            serv->tls_hostname, ctx->sess_saved);
   return 0;
 }
 
