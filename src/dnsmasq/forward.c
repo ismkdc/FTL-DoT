@@ -601,11 +601,14 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
                   if (r > 0)
                     {
                       ssize_t resp_len = (ssize_t)((lenbuf[0] << 8) | lenbuf[1]);
-                      int pr = dot_recv_payload(srv, (unsigned char *)daemon->packet, (size_t)resp_len);
-                      if ((size_t)resp_len <= daemon->packet_buff_sz && pr == (int)resp_len)
+                      if ((size_t)resp_len <= daemon->packet_buff_sz)
                         {
-                          srv->flags |= SERV_GOT_TCP;
-                          rsize = resp_len;
+                          int pr = dot_recv_payload(srv, (unsigned char *)daemon->packet, (size_t)resp_len);
+                          if (pr == (int)resp_len)
+                            {
+                              srv->flags |= SERV_GOT_TCP;
+                              rsize = resp_len;
+                            }
                         }
                     }
                 }

@@ -302,8 +302,9 @@ int dot_recv_length(struct server *serv, unsigned char *lenbuf)
             return 0;
           /* TLS 1.3: server may send NewSessionTicket before the DNS reply;
            * mbedTLS surfaces this as RECEIVED_NEW_SESSION_TICKET — not an
-           * error, just retry the read to get the actual response. */
-          if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+           * error, but count it against retries to avoid an infinite loop if
+           * a server sends tickets back-to-back indefinitely. */
+          if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET && ++tries < DOT_IO_RETRIES)
             continue;
           if ((ret == MBEDTLS_ERR_SSL_WANT_READ ||
                ret == MBEDTLS_ERR_SSL_WANT_WRITE) && ++tries < DOT_IO_RETRIES)
@@ -328,7 +329,7 @@ int dot_recv_payload(struct server *serv, unsigned char *buf, size_t len)
         {
           if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == 0)
             return (int)got;
-          if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+          if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET && ++tries < DOT_IO_RETRIES)
             continue;
           if ((ret == MBEDTLS_ERR_SSL_WANT_READ ||
                ret == MBEDTLS_ERR_SSL_WANT_WRITE) && ++tries < DOT_IO_RETRIES)
