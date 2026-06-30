@@ -77,12 +77,12 @@ jobs:
               echo \"SHA256: \$SHA256\"
 
               cp pihole-FTL /src/pihole-FTL-${{ matrix.ftlarch }}
+              chmod +x /src/pihole-FTL-${{ matrix.ftlarch }}
             "
 
       - name: Smoke test (amd64 only)
         if: matrix.arch == 'amd64'
         run: |
-          chmod +x pihole-FTL-amd64
           ./pihole-FTL-amd64 --version
           # Verify tls-server option is recognized
           ./pihole-FTL-amd64 --help 2>&1 | grep -q "tls-server" && echo "DoT: OK" || echo "DoT: NOT FOUND"
