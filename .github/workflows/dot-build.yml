@@ -13,24 +13,29 @@ permissions:
 jobs:
   build:
     name: Build (${{ matrix.arch }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
+            runner: ubuntu-latest
             platform: linux/amd64
             ftlarch: amd64
           - arch: arm64
+            runner: ubuntu-24.04-arm
             platform: linux/arm64
             ftlarch: arm64
           - arch: armv7
+            runner: ubuntu-latest
             platform: linux/arm/v7
             ftlarch: armv7
           - arch: armv6
+            runner: ubuntu-latest
             platform: linux/arm/v6
             ftlarch: armv6
           - arch: riscv64
+            runner: ubuntu-latest
             platform: linux/riscv64
             ftlarch: riscv64
 
