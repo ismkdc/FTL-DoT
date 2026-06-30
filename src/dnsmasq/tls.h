@@ -63,6 +63,12 @@ void dot_log_error(const char *prefix, int ret);
 int dot_start(struct server *serv, struct frec *forward,
               const struct dns_header *header, size_t plen);
 
+/* Enqueue a query while the server is in-flight (one slot per server).
+ * Copies the DNS packet; frec->sentto must be set by caller on success.
+ * Returns 0 on success, -1 if the slot is already taken or malloc fails. */
+int dot_enqueue(struct server *serv, struct frec *forward,
+                const struct dns_header *header, size_t plen);
+
 /* Advance the state machine when serv->tcpfd is ready.
  * Called from check_dns_listeners() when poll fires for the DoT fd.
  * On completion calls return_reply(); on error cleans up. */

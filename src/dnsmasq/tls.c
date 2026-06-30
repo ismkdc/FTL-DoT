@@ -377,38 +377,23 @@ static int dot_nb_handshake_setup(struct server *serv)
 
 int dot_poll_events(int state)
 {
-  (void)state;
-  return POLLIN | POLLOUT; /* TLS may flip direction at any time */
+  switch (state)
+    {
+    case DOT_STATE_CONNECTING:
+      return POLLOUT;              /* waiting for connect() to complete */
+    case DOT_STATE_RECV_LEN:
+    case DOT_STATE_RECV_PAYLOAD:
+      return POLLIN;               /* pure read phase */
+    default:
+      return POLLIN | POLLOUT;     /* HANDSHAKING/SENDING: TLS may flip direction */
+    }
 }
 
-int dot_start(struct server *serv, struct frec *forward,
-              const struct dns_header *header, size_t plen)
+/* Open a non-blocking TCP socket to the DoT server and set dot_state.
+ * dot_sndbuf/dot_frec/dot_rspbuf must already be set by the caller.
+ * Returns 0 on success, -1 on error (socket cleaned up, dot_sndbuf freed). */
+static int dot_start_socket(struct server *serv)
 {
-  /* Allocate send buffer: 2-byte TCP-DNS length prefix + DNS query payload. */
-  size_t sndlen = 2 + plen;
-  unsigned char *sndbuf = malloc(sndlen);
-  if (!sndbuf) return -1;
-
-  u16 tcp_len = htons((u16)plen);
-  memcpy(sndbuf,     &tcp_len, 2);
-  memcpy(sndbuf + 2, header,  plen);
-
-  serv->dot_sndbuf   = sndbuf;
-  serv->dot_sndlen   = sndlen;
-  serv->dot_sndoff   = 0;
-  serv->dot_lenbytes = 0;
-  serv->dot_rsplen   = 0;
-  serv->dot_rspoff   = 0;
-  serv->dot_frec     = forward;
-
-  /* Lazy-allocate the response buffer (same capacity as daemon->packet). */
-  if (!serv->dot_rspbuf)
-    {
-      serv->dot_rspbuf = malloc(daemon->packet_buff_sz);
-      if (!serv->dot_rspbuf)
-        { free(sndbuf); serv->dot_sndbuf = NULL; return -1; }
-    }
-
   /* Re-use the existing TLS session if the connection is still alive. */
   if (serv->tcpfd != -1 && (serv->flags & SERV_GOT_TCP))
     {
@@ -425,32 +410,30 @@ int dot_start(struct server *serv, struct frec *forward,
       serv->flags &= ~SERV_GOT_TCP;
     }
 
-  /* Open a non-blocking TCP socket. */
   serv->tcpfd = socket(serv->addr.sa.sa_family, SOCK_STREAM, 0);
   if (serv->tcpfd == -1)
-    { free(sndbuf); serv->dot_sndbuf = NULL; return -1; }
+    { free(serv->dot_sndbuf); serv->dot_sndbuf = NULL; return -1; }
 
   int fl = fcntl(serv->tcpfd, F_GETFL, 0);
   if (fl == -1 || fcntl(serv->tcpfd, F_SETFL, fl | O_NONBLOCK) == -1)
     {
       close(serv->tcpfd); serv->tcpfd = -1;
-      free(sndbuf); serv->dot_sndbuf = NULL; return -1;
+      free(serv->dot_sndbuf); serv->dot_sndbuf = NULL; return -1;
     }
 
   if (!local_bind(serv->tcpfd, &serv->source_addr, serv->interface, 0, 1))
     {
       close(serv->tcpfd); serv->tcpfd = -1;
-      free(sndbuf); serv->dot_sndbuf = NULL; return -1;
+      free(serv->dot_sndbuf); serv->dot_sndbuf = NULL; return -1;
     }
 
   int ret = connect(serv->tcpfd, &serv->addr.sa, sa_len(&serv->addr));
   if (ret == 0)
     {
-      /* Immediate connect (loopback).  Start handshake right away. */
       if (dot_nb_handshake_setup(serv) != 0)
         {
           close(serv->tcpfd); serv->tcpfd = -1;
-          free(sndbuf); serv->dot_sndbuf = NULL; return -1;
+          free(serv->dot_sndbuf); serv->dot_sndbuf = NULL; return -1;
         }
       serv->dot_state = DOT_STATE_HANDSHAKING;
     }
@@ -463,10 +446,95 @@ int dot_start(struct server *serv, struct frec *forward,
       my_syslog(LOG_ERR, "DoT: connect to %s failed: %s",
                 serv->tls_hostname, strerror(errno));
       close(serv->tcpfd); serv->tcpfd = -1;
-      free(sndbuf); serv->dot_sndbuf = NULL; return -1;
+      free(serv->dot_sndbuf); serv->dot_sndbuf = NULL; return -1;
     }
 
   return 0;
+}
+
+int dot_start(struct server *serv, struct frec *forward,
+              const struct dns_header *header, size_t plen)
+{
+  size_t sndlen = 2 + plen;
+  unsigned char *sndbuf = malloc(sndlen);
+  if (!sndbuf) return -1;
+
+  u16 tcp_len = htons((u16)plen);
+  memcpy(sndbuf,     &tcp_len, 2);
+  memcpy(sndbuf + 2, header,  plen);
+
+  serv->dot_sndbuf   = sndbuf;
+  serv->dot_sndlen   = sndlen;
+  serv->dot_sndoff   = 0;
+  serv->dot_lenbytes = 0;
+  serv->dot_rsplen   = 0;
+  serv->dot_rspoff   = 0;
+  serv->dot_frec     = forward;
+
+  if (!serv->dot_rspbuf)
+    {
+      serv->dot_rspbuf = malloc(daemon->packet_buff_sz);
+      if (!serv->dot_rspbuf)
+        { free(sndbuf); serv->dot_sndbuf = NULL; return -1; }
+    }
+
+  return dot_start_socket(serv);
+}
+
+int dot_enqueue(struct server *serv, struct frec *forward,
+                const struct dns_header *header, size_t plen)
+{
+  if (serv->dot_pendingbuf)
+    return -1; /* pending slot already taken */
+
+  size_t sndlen = 2 + plen;
+  unsigned char *buf = malloc(sndlen);
+  if (!buf) return -1;
+
+  u16 tcp_len = htons((u16)plen);
+  memcpy(buf,     &tcp_len, 2);
+  memcpy(buf + 2, header,  plen);
+
+  serv->dot_pendingbuf   = buf;
+  serv->dot_pendinglen   = sndlen;
+  serv->dot_pendingfrec  = forward;
+  return 0;
+}
+
+/* Called after the server becomes idle; starts any queued pending query. */
+static void dot_start_pending(struct server *serv)
+{
+  struct frec *frec = serv->dot_pendingfrec;
+  if (!frec) return;
+
+  unsigned char *buf = serv->dot_pendingbuf;
+  size_t sndlen      = serv->dot_pendinglen;
+
+  serv->dot_pendingbuf   = NULL;
+  serv->dot_pendinglen   = 0;
+  serv->dot_pendingfrec  = NULL;
+
+  /* Detect frec recycled while it was waiting. */
+  if (frec->sentto != serv) { free(buf); return; }
+
+  /* Transfer ownership of buf into the active send slot. */
+  serv->dot_sndbuf   = buf;
+  serv->dot_sndlen   = sndlen;
+  serv->dot_sndoff   = 0;
+  serv->dot_lenbytes = 0;
+  serv->dot_rsplen   = 0;
+  serv->dot_rspoff   = 0;
+  serv->dot_frec     = frec;
+
+  if (!serv->dot_rspbuf)
+    {
+      serv->dot_rspbuf = malloc(daemon->packet_buff_sz);
+      if (!serv->dot_rspbuf)
+        { free(buf); serv->dot_sndbuf = NULL; dot_abort(serv); return; }
+    }
+
+  if (dot_start_socket(serv) != 0)
+    dot_abort(serv);
 }
 
 static void dot_fail(struct server *serv)
@@ -486,6 +554,8 @@ static void dot_fail(struct server *serv)
   serv->dot_sndbuf = NULL;
   serv->dot_frec   = NULL;
   serv->dot_state  = DOT_STATE_IDLE;
+
+  dot_start_pending(serv);
 }
 
 void dot_abort(struct server *serv)
@@ -502,6 +572,8 @@ void dot_abort(struct server *serv)
   serv->dot_sndbuf = NULL;
   serv->dot_frec   = NULL;
   serv->dot_state  = DOT_STATE_IDLE;
+
+  dot_start_pending(serv);
 }
 
 void dot_advance(time_t now, struct server *serv)
@@ -641,6 +713,9 @@ void dot_advance(time_t now, struct server *serv)
                        EXTR_NAME_FLIP, 1);
 
           return_reply(now, fwd, resp, rsize, STAT_OK);
+
+          /* Server is now idle — start any query that was queued while busy. */
+          dot_start_pending(serv);
         }
         break;
       }
@@ -685,6 +760,9 @@ void dot_server_free(struct server *serv)
   /* Free async state machine buffers. */
   free(serv->dot_sndbuf); serv->dot_sndbuf = NULL;
   free(serv->dot_rspbuf); serv->dot_rspbuf = NULL;
+  free(serv->dot_pendingbuf); serv->dot_pendingbuf = NULL;
+  serv->dot_pendingfrec = NULL;
+  serv->dot_pendinglen  = 0;
   serv->dot_state = DOT_STATE_IDLE;
   serv->dot_frec  = NULL;
 }

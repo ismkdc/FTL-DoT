@@ -667,6 +667,10 @@ struct server {
   size_t        dot_rsplen;   /* expected response payload length */
   unsigned char *dot_rspbuf;  /* response payload buffer; allocated once, reused */
   size_t        dot_rspoff;   /* bytes of payload received so far */
+  /* Pending query queued while a query is in-flight (one slot per server). */
+  unsigned char *dot_pendingbuf;   /* [2-byte-len][dns-query], heap */
+  size_t         dot_pendinglen;
+  struct frec   *dot_pendingfrec;  /* frec->sentto==serv validates it wasn't recycled */
 #endif
 };
 

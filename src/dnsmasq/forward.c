@@ -573,7 +573,16 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
             }
           else if (srv->dot_state != DOT_STATE_IDLE)
             {
-              /* Server is busy with another in-flight query: try next. */
+              /* Server is busy with another in-flight query.
+               * Try to queue behind it (one pending slot per server). */
+              if (dot_enqueue(srv, forward, header, plen) == 0)
+                {
+                  forward->sentto = srv;
+                  srv->queries++;
+                  forwarded = 1;
+                  break;
+                }
+              /* Pending slot taken — try the next server. */
               my_syslog(LOG_DEBUG|MS_DEBUG,
                         "DoT: server %s busy (state %d), trying next",
                         srv->tls_hostname, srv->dot_state);
