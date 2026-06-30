@@ -37,6 +37,8 @@ jobs:
     steps:
       - name: Checkout FTL-DoT
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so git describe works for FTL version embed
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
