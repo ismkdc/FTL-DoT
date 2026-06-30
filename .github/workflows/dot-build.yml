@@ -49,7 +49,7 @@ jobs:
           docker run --rm --platform ${{ matrix.platform }} \
             -v "${{ github.workspace }}:/src" \
             -w /src \
-            alpine:3.24.0 \
+            alpine:3.21 \
             sh -c "
               set -ex
               apk add --no-cache \
@@ -67,7 +67,7 @@ jobs:
               cd /tmp/ftl-build
               cmake /src \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DSTATIC=false
+                -DSTATIC=true
               make -j\$(nproc) pihole-FTL
               strip pihole-FTL
 
