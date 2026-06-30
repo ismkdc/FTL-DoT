@@ -20,14 +20,14 @@ Native DoT vs unbound+pihole forwarding to the same provider. 60 uncached querie
 
 | Resolver | avg | p50 | p95 | p99 |
 |---|---|---|---|---|
-| **★ Native DoT → Google** | 11.7ms | 11.5ms | 16.8ms | **17.4ms** |
-| Unbound+Pihole → Google DoT | 11.1ms | 9.4ms | 17.5ms | 51.8ms |
-| **★ Native DoT → Cloudflare** | 14.7ms | 14.5ms | 19.0ms | **22.6ms** |
-| Unbound+Pihole → Cloudflare DoT | 12.2ms | 10.8ms | 22.4ms | 54.7ms |
-| **★ Native DoT → Quad9** | 15.4ms | 15.0ms | 19.2ms | **24.8ms** |
-| Unbound+Pihole → Quad9 DoT | 12.1ms | 11.5ms | 16.3ms | 40.3ms |
+| **★ Native DoT → Google** | **4.2ms** | **3.9ms** | 5.7ms | 10.0ms |
+| Unbound+Pihole → Google DoT | 4.5ms | 4.5ms | 5.6ms | 6.2ms |
+| **★ Native DoT → Cloudflare** | **4.5ms** | **4.1ms** | **7.1ms** | **8.0ms** |
+| Unbound+Pihole → Cloudflare DoT | 7.6ms | 6.9ms | 8.3ms | 42.2ms |
+| **★ Native DoT → Quad9** | **4.5ms** | **4.2ms** | **6.4ms** | **6.7ms** |
+| Unbound+Pihole → Quad9 DoT | 5.3ms | 4.7ms | 6.7ms | 22.5ms |
 
-p99 tail latency is 2–3× better with native DoT. The pihole→unbound IPC hop causes spikes (40–55ms at p99) that native DoT avoids.
+60 uncached queries on native arm64 (Apple M-series). Native DoT wins on avg, p50, and tail latency for CF and Quad9. The pihole→unbound IPC hop causes p99 spikes (22–42ms) that native DoT avoids.
 
 ## Building
 
