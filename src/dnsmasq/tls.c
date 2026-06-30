@@ -10,17 +10,18 @@
  *  - Per-connection: ssl_context and net_context are reset on each new TCP
  *    connection but reuse the per-server config.  Session resumption avoids the
  *    full handshake RTT on reconnect.
- *  - I/O is synchronous/blocking via mbedtls_net_send / mbedtls_net_recv.
- *    The existing SO_SNDTIMEO / SO_RCVTIMEO on serv->tcpfd provide timeouts;
- *    WANT_READ / WANT_WRITE are retried within dot_handshake / dot_send /
- *    dot_recv_* up to DOT_IO_RETRIES times before giving up.
+ *  - I/O is non-blocking: TCP socket is O_NONBLOCK; mbedTLS WANT_READ/WANT_WRITE
+ *    are handled by returning to the poll loop (dot_advance is re-entered when
+ *    the fd is ready).  This keeps the dnsmasq event loop responsive.
  */
 
 #ifdef HAVE_MBEDTLS
 
 #include "dnsmasq.h"
 #include "tls.h"
+#include "dnsmasq_interface.h"
 
+#include <fcntl.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/net_sockets.h>
@@ -342,6 +343,313 @@ int dot_recv_payload(struct server *serv, unsigned char *buf, size_t len)
   return (int)got;
 }
 
+/* ── Async non-blocking DoT state machine ──────────────────────────────── */
+
+/* Prepare the mbedTLS ssl context for a new connection on serv->tcpfd.
+ * Allocates tls_ctx if needed.  Called once after TCP connect() completes. */
+static int dot_nb_handshake_setup(struct server *serv)
+{
+  struct tls_server_ctx *ctx = serv->tls_ctx;
+  if (!ctx)
+    {
+      if (dot_server_init(serv) != 0) return -1;
+      ctx = serv->tls_ctx;
+    }
+
+  mbedtls_ssl_free(&ctx->ssl);
+  mbedtls_ssl_init(&ctx->ssl);
+
+  int ret = mbedtls_ssl_setup(&ctx->ssl, &ctx->conf);
+  if (ret != 0) { dot_log_error("DoT: ssl_setup", ret); return -1; }
+
+  ret = mbedtls_ssl_set_hostname(&ctx->ssl, serv->tls_hostname);
+  if (ret != 0) { dot_log_error("DoT: set_hostname", ret); return -1; }
+
+  ctx->net.fd = serv->tcpfd;
+  mbedtls_ssl_set_bio(&ctx->ssl, &ctx->net,
+                      mbedtls_net_send, mbedtls_net_recv, NULL);
+
+  if (ctx->sess_saved)
+    mbedtls_ssl_set_session(&ctx->ssl, &ctx->session);
+
+  return 0;
+}
+
+int dot_poll_events(int state)
+{
+  (void)state;
+  return POLLIN | POLLOUT; /* TLS may flip direction at any time */
+}
+
+int dot_start(struct server *serv, struct frec *forward,
+              const struct dns_header *header, size_t plen)
+{
+  /* Allocate send buffer: 2-byte TCP-DNS length prefix + DNS query payload. */
+  size_t sndlen = 2 + plen;
+  unsigned char *sndbuf = malloc(sndlen);
+  if (!sndbuf) return -1;
+
+  u16 tcp_len = htons((u16)plen);
+  memcpy(sndbuf,     &tcp_len, 2);
+  memcpy(sndbuf + 2, header,  plen);
+
+  serv->dot_sndbuf   = sndbuf;
+  serv->dot_sndlen   = sndlen;
+  serv->dot_sndoff   = 0;
+  serv->dot_lenbytes = 0;
+  serv->dot_rsplen   = 0;
+  serv->dot_rspoff   = 0;
+  serv->dot_frec     = forward;
+
+  /* Lazy-allocate the response buffer (same capacity as daemon->packet). */
+  if (!serv->dot_rspbuf)
+    {
+      serv->dot_rspbuf = malloc(daemon->packet_buff_sz);
+      if (!serv->dot_rspbuf)
+        { free(sndbuf); serv->dot_sndbuf = NULL; return -1; }
+    }
+
+  /* Re-use the existing TLS session if the connection is still alive. */
+  if (serv->tcpfd != -1 && (serv->flags & SERV_GOT_TCP))
+    {
+      serv->dot_state = DOT_STATE_SENDING;
+      return 0;
+    }
+
+  /* Close any stale half-open connection. */
+  if (serv->tcpfd != -1)
+    {
+      dot_close(serv);
+      close(serv->tcpfd);
+      serv->tcpfd = -1;
+      serv->flags &= ~SERV_GOT_TCP;
+    }
+
+  /* Open a non-blocking TCP socket. */
+  serv->tcpfd = socket(serv->addr.sa.sa_family, SOCK_STREAM, 0);
+  if (serv->tcpfd == -1)
+    { free(sndbuf); serv->dot_sndbuf = NULL; return -1; }
+
+  int fl = fcntl(serv->tcpfd, F_GETFL, 0);
+  if (fl == -1 || fcntl(serv->tcpfd, F_SETFL, fl | O_NONBLOCK) == -1)
+    {
+      close(serv->tcpfd); serv->tcpfd = -1;
+      free(sndbuf); serv->dot_sndbuf = NULL; return -1;
+    }
+
+  if (!local_bind(serv->tcpfd, &serv->source_addr, serv->interface, 0, 1))
+    {
+      close(serv->tcpfd); serv->tcpfd = -1;
+      free(sndbuf); serv->dot_sndbuf = NULL; return -1;
+    }
+
+  int ret = connect(serv->tcpfd, &serv->addr.sa, sa_len(&serv->addr));
+  if (ret == 0)
+    {
+      /* Immediate connect (loopback).  Start handshake right away. */
+      if (dot_nb_handshake_setup(serv) != 0)
+        {
+          close(serv->tcpfd); serv->tcpfd = -1;
+          free(sndbuf); serv->dot_sndbuf = NULL; return -1;
+        }
+      serv->dot_state = DOT_STATE_HANDSHAKING;
+    }
+  else if (errno == EINPROGRESS)
+    {
+      serv->dot_state = DOT_STATE_CONNECTING;
+    }
+  else
+    {
+      my_syslog(LOG_ERR, "DoT: connect to %s failed: %s",
+                serv->tls_hostname, strerror(errno));
+      close(serv->tcpfd); serv->tcpfd = -1;
+      free(sndbuf); serv->dot_sndbuf = NULL; return -1;
+    }
+
+  return 0;
+}
+
+static void dot_fail(struct server *serv)
+{
+  FTL_connection_error("DoT async query failed", &serv->addr, -1);
+  serv->failed_queries++;
+
+  if (serv->tls_ctx && serv->tcpfd != -1)
+    dot_close(serv);
+  if (serv->tcpfd != -1)
+    {
+      close(serv->tcpfd);
+      serv->tcpfd = -1;
+    }
+  serv->flags    &= ~SERV_GOT_TCP;
+  free(serv->dot_sndbuf);
+  serv->dot_sndbuf = NULL;
+  serv->dot_frec   = NULL;
+  serv->dot_state  = DOT_STATE_IDLE;
+}
+
+void dot_abort(struct server *serv)
+{
+  if (serv->tls_ctx && serv->tcpfd != -1)
+    dot_close(serv);
+  if (serv->tcpfd != -1)
+    {
+      close(serv->tcpfd);
+      serv->tcpfd = -1;
+    }
+  serv->flags    &= ~SERV_GOT_TCP;
+  free(serv->dot_sndbuf);
+  serv->dot_sndbuf = NULL;
+  serv->dot_frec   = NULL;
+  serv->dot_state  = DOT_STATE_IDLE;
+}
+
+void dot_advance(time_t now, struct server *serv)
+{
+  struct frec *fwd = serv->dot_frec;
+
+  /* Bail if the frec was already freed/recycled (query timed out). */
+  if (!fwd || fwd->sentto != serv)
+    { dot_abort(serv); return; }
+
+  switch (serv->dot_state)
+    {
+    case DOT_STATE_CONNECTING:
+      {
+        /* Check whether the non-blocking connect() completed. */
+        int err = 0;
+        socklen_t elen = sizeof(err);
+        if (getsockopt(serv->tcpfd, SOL_SOCKET, SO_ERROR, &err, &elen) == -1 || err != 0)
+          {
+            my_syslog(LOG_ERR, "DoT: connect to %s failed: %s",
+                      serv->tls_hostname, strerror(err ? err : errno));
+            dot_fail(serv); return;
+          }
+        if (dot_nb_handshake_setup(serv) != 0) { dot_fail(serv); return; }
+        serv->dot_state = DOT_STATE_HANDSHAKING;
+      }
+      /* FALLTHROUGH — attempt handshake immediately; may already have data */
+
+    case DOT_STATE_HANDSHAKING:
+      {
+        struct tls_server_ctx *ctx = serv->tls_ctx;
+        int ret = mbedtls_ssl_handshake(&ctx->ssl);
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+          return; /* wait for next poll event */
+        if (ret != 0)
+          { dot_log_error("DoT: handshake failed", ret); dot_fail(serv); return; }
+
+        /* Save session for resumption. */
+        if (!ctx->sess_saved) mbedtls_ssl_session_init(&ctx->session);
+        if (mbedtls_ssl_get_session(&ctx->ssl, &ctx->session) == 0) ctx->sess_saved = 1;
+
+        /* RFC 7858 §4: verify ALPN "dot". */
+        const char *alpn = mbedtls_ssl_get_alpn_protocol(&ctx->ssl);
+        if (!alpn || strcmp(alpn, "dot") != 0)
+          {
+            my_syslog(LOG_ERR, "DoT: %s did not negotiate ALPN 'dot' (got: %s)",
+                      serv->tls_hostname, alpn ? alpn : "none");
+            dot_fail(serv); return;
+          }
+        my_syslog(LOG_DEBUG|MS_DEBUG, "DoT: handshake OK with %s (resumed=%d)",
+                  serv->tls_hostname, ctx->sess_saved);
+        serv->dot_state = DOT_STATE_SENDING;
+      }
+      /* FALLTHROUGH */
+
+    case DOT_STATE_SENDING:
+      {
+        struct tls_server_ctx *ctx = serv->tls_ctx;
+        while (serv->dot_sndoff < serv->dot_sndlen)
+          {
+            int ret = mbedtls_ssl_write(&ctx->ssl,
+                                        serv->dot_sndbuf + serv->dot_sndoff,
+                                        serv->dot_sndlen  - serv->dot_sndoff);
+            if (ret > 0) { serv->dot_sndoff += (size_t)ret; continue; }
+            if (ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
+                ret == MBEDTLS_ERR_SSL_WANT_READ)  return;
+            dot_log_error("DoT: ssl_write failed", ret);
+            dot_fail(serv); return;
+          }
+        free(serv->dot_sndbuf); serv->dot_sndbuf = NULL;
+        serv->dot_lenbytes = 0;
+        serv->dot_state    = DOT_STATE_RECV_LEN;
+      }
+      /* FALLTHROUGH */
+
+    case DOT_STATE_RECV_LEN:
+      {
+        struct tls_server_ctx *ctx = serv->tls_ctx;
+        while (serv->dot_lenbytes < 2)
+          {
+            int ret = mbedtls_ssl_read(&ctx->ssl,
+                                       serv->dot_lenbuf + serv->dot_lenbytes,
+                                       2 - serv->dot_lenbytes);
+            if (ret > 0)  { serv->dot_lenbytes += (size_t)ret; continue; }
+            if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+                ret == MBEDTLS_ERR_SSL_WANT_WRITE) return;
+            if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) continue;
+            if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == 0)
+              { dot_fail(serv); return; }
+            dot_log_error("DoT: recv len failed", ret);
+            dot_fail(serv); return;
+          }
+        size_t rsplen = ((size_t)serv->dot_lenbuf[0] << 8) | serv->dot_lenbuf[1];
+        if (rsplen == 0 || rsplen > daemon->packet_buff_sz)
+          {
+            my_syslog(LOG_ERR, "DoT: response length %zu out of range", rsplen);
+            dot_fail(serv); return;
+          }
+        serv->dot_rsplen = rsplen;
+        serv->dot_rspoff = 0;
+        serv->dot_state  = DOT_STATE_RECV_PAYLOAD;
+      }
+      /* FALLTHROUGH */
+
+    case DOT_STATE_RECV_PAYLOAD:
+      {
+        struct tls_server_ctx *ctx = serv->tls_ctx;
+        while (serv->dot_rspoff < serv->dot_rsplen)
+          {
+            int ret = mbedtls_ssl_read(&ctx->ssl,
+                                       serv->dot_rspbuf + serv->dot_rspoff,
+                                       serv->dot_rsplen  - serv->dot_rspoff);
+            if (ret > 0)  { serv->dot_rspoff += (size_t)ret; continue; }
+            if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+                ret == MBEDTLS_ERR_SSL_WANT_WRITE) return;
+            if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) continue;
+            if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == 0)
+              { dot_fail(serv); return; }
+            dot_log_error("DoT: recv payload failed", ret);
+            dot_fail(serv); return;
+          }
+
+        /* Full response received — deliver it. */
+        {
+          ssize_t rsize = (ssize_t)serv->dot_rsplen;
+          struct dns_header *resp = (struct dns_header *)serv->dot_rspbuf;
+
+          /* Mark connection live for reuse; reset state BEFORE return_reply
+           * since that may trigger new queries on this server. */
+          serv->flags    |= SERV_GOT_TCP;
+          serv->dot_state = DOT_STATE_IDLE;
+          serv->dot_frec  = NULL;
+
+          /* Un-flip query-name case scrambling in the echoed question. */
+          extract_name(resp, (size_t)rsize, NULL,
+                       (char *)&fwd->frec_src.encode_bitmap,
+                       EXTR_NAME_FLIP, 1);
+
+          return_reply(now, fwd, resp, rsize, STAT_OK);
+        }
+        break;
+      }
+
+    default:
+      break;
+    }
+}
+
 /* ── Session / cleanup ─────────────────────────────────────────────────── */
 
 void dot_close(struct server *serv)
@@ -373,6 +681,12 @@ void dot_server_free(struct server *serv)
   mbedtls_net_free(&ctx->net);
   free(ctx);
   serv->tls_ctx = NULL;
+
+  /* Free async state machine buffers. */
+  free(serv->dot_sndbuf); serv->dot_sndbuf = NULL;
+  free(serv->dot_rspbuf); serv->dot_rspbuf = NULL;
+  serv->dot_state = DOT_STATE_IDLE;
+  serv->dot_frec  = NULL;
 }
 
 /* ── Utility ───────────────────────────────────────────────────────────── */

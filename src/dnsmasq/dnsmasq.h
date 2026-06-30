@@ -604,6 +604,16 @@ union mysockaddr {
 #define SERV_DO_DNSSEC      16384  /* Validate DNSSEC when using this server */
 #define SERV_GOT_TCP        32768  /* Got some data from the TCP connection */
 
+/* Async DoT state machine states (FTL-DoT fork). */
+#ifdef HAVE_MBEDTLS
+#define DOT_STATE_IDLE         0  /* no query in flight */
+#define DOT_STATE_CONNECTING   1  /* non-blocking TCP connect in progress */
+#define DOT_STATE_HANDSHAKING  2  /* TLS handshake in progress */
+#define DOT_STATE_SENDING      3  /* writing DNS query to TLS stream */
+#define DOT_STATE_RECV_LEN     4  /* reading 2-byte response length prefix */
+#define DOT_STATE_RECV_PAYLOAD 5  /* reading response payload */
+#endif
+
 struct serverfd {
   int fd;
   union mysockaddr source_addr;
@@ -644,8 +654,19 @@ struct server {
 #endif
 #ifdef HAVE_MBEDTLS
   /* DoT support (FTL-DoT fork). NULL tls_hostname = plain DNS. */
-  char *tls_hostname;   /* SNI + cert verification hostname; heap-allocated */
-  void *tls_ctx;        /* struct tls_server_ctx *; opaque to avoid mbedtls headers here */
+  char *tls_hostname;     /* SNI + cert verification hostname; heap-allocated */
+  void *tls_ctx;          /* struct tls_server_ctx *; opaque to avoid mbedtls headers here */
+  /* Async DoT state machine */
+  int           dot_state;    /* DOT_STATE_* */
+  struct frec  *dot_frec;     /* in-flight query frec (NULL when idle) */
+  unsigned char *dot_sndbuf;  /* [2-byte-len][dns-query], heap; NULL when idle */
+  size_t        dot_sndlen;   /* total bytes in dot_sndbuf */
+  size_t        dot_sndoff;   /* bytes written so far */
+  unsigned char dot_lenbuf[2];/* response 2-byte length prefix accumulator */
+  size_t        dot_lenbytes; /* 0..2 bytes received into dot_lenbuf */
+  size_t        dot_rsplen;   /* expected response payload length */
+  unsigned char *dot_rspbuf;  /* response payload buffer; allocated once, reused */
+  size_t        dot_rspoff;   /* bytes of payload received so far */
 #endif
 };
 

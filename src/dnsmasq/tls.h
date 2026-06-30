@@ -38,22 +38,15 @@ void dot_global_init(void);
  * Allocates and configures tls_server_ctx; returns -1 on error. */
 int dot_server_init(struct server *serv);
 
-/* After TCP connect() succeeds on serv->tcpfd, perform TLS handshake.
- * Returns 0 on success, -1 on failure (caller should close tcpfd). */
+/* Synchronous blocking handshake (kept for reference; async path preferred). */
 int dot_handshake(struct server *serv);
 
-/* Write exactly len bytes of DNS message (2-byte length prefix + payload).
- * sendio[0] = {&length_be, 2}, sendio[1] = {payload, n}
- * Returns 1 on success, 0 on failure. */
+/* Synchronous blocking send/recv (kept for reference). */
 int dot_send(struct server *serv, struct iovec *sendio);
-
-/* Read 2-byte length prefix, then read that many bytes into buf.
- * Returns number of bytes read (>0), 0 on EOF, -1 on error. */
 int dot_recv_length(struct server *serv, unsigned char *lenbuf);
 int dot_recv_payload(struct server *serv, unsigned char *buf, size_t len);
 
-/* Close TLS session gracefully; saves session for resumption.
- * Does NOT close serv->tcpfd (caller does that). */
+/* Close TLS session gracefully (does NOT close serv->tcpfd). */
 void dot_close(struct server *serv);
 
 /* Free all TLS resources for this server (called on server removal). */
@@ -61,6 +54,25 @@ void dot_server_free(struct server *serv);
 
 /* Log a mbedTLS error code with a message prefix. */
 void dot_log_error(const char *prefix, int ret);
+
+/* ── Async non-blocking DoT state machine ── */
+
+/* Start an async DoT query for forward frec.
+ * Sets serv->dot_state and registers the connection in the poll loop.
+ * Returns 0 on success (state machine started), -1 on immediate failure. */
+int dot_start(struct server *serv, struct frec *forward,
+              const struct dns_header *header, size_t plen);
+
+/* Advance the state machine when serv->tcpfd is ready.
+ * Called from check_dns_listeners() when poll fires for the DoT fd.
+ * On completion calls return_reply(); on error cleans up. */
+void dot_advance(time_t now, struct server *serv);
+
+/* Abort the async op without delivering a reply (e.g. frec timed out). */
+void dot_abort(struct server *serv);
+
+/* Return the poll events to watch for the given dot_state (POLLIN/POLLOUT). */
+int dot_poll_events(int state);
 
 #endif /* HAVE_MBEDTLS */
 #endif /* TLS_H */

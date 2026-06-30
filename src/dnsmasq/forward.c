@@ -543,100 +543,17 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
       struct server *srv = daemon->serverarray[start];
 
 #ifdef HAVE_MBEDTLS
-      /* DoT server: resolve synchronously via TCP+TLS instead of UDP.
-       * On success, return_reply() processes and delivers the answer then
-       * frees the frec — we just return.  On failure, fall through to
+      /* DoT server: async non-blocking path via state machine.
+       * dot_start() initiates the connection/send; dot_advance() (called from
+       * check_dns_listeners() when the fd is ready) delivers the reply via
+       * return_reply().  On failure or if the server is busy, fall through to
        * try the next server in the array. */
       if (srv->tls_hostname)
         {
-          u16 tcp_len = htons((u16)plen);
-          struct iovec sendio[2];
-          unsigned char lenbuf[2];
-          int had_tcp = 0;       /* had a working connection before this query */
-          int dot_tries;
-          ssize_t rsize = -1;
-          struct timeval tv;
-
-          sendio[0].iov_base = &tcp_len;
-          sendio[0].iov_len  = 2;
-          sendio[1].iov_base = (void *)header;
-          sendio[1].iov_len  = plen;
-
-          /* Retry loop: at most once (fresh connect → send/recv fails → reconnect). */
-          for (dot_tries = 0; dot_tries < 2; dot_tries++)
+          if (srv->dot_state == DOT_STATE_IDLE &&
+              dot_start(srv, forward, header, plen) == 0)
             {
-              rsize = -1;
-
-              /* Open TCP connection if we don't have one already. */
-              if (srv->tcpfd == -1)
-                {
-                  srv->tcpfd = socket(srv->addr.sa.sa_family, SOCK_STREAM, 0);
-                  if (srv->tcpfd == -1)
-                    break;
-
-                  tv.tv_sec = TCP_TIMEOUT; tv.tv_usec = 0;
-                  setsockopt(srv->tcpfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-                  tv.tv_sec += TCP_TIMEOUT;
-                  setsockopt(srv->tcpfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-                  if (!local_bind(srv->tcpfd, &srv->source_addr, srv->interface, 0, 1))
-                    { close(srv->tcpfd); srv->tcpfd = -1; break; }
-
-                  if (connect(srv->tcpfd, &srv->addr.sa, sa_len(&srv->addr)) == -1)
-                    { close(srv->tcpfd); srv->tcpfd = -1; break; }
-
-                  if (dot_handshake(srv) != 0)
-                    { close(srv->tcpfd); srv->tcpfd = -1; break; }
-
-                  srv->flags &= ~SERV_GOT_TCP;
-                  had_tcp = 0; /* fresh; don't retry on first I/O failure */
-                }
-              else
-                had_tcp = (srv->flags & SERV_GOT_TCP) ? 1 : 0;
-
-              /* Send DNS query with 2-byte length prefix, receive response. */
-              if (dot_send(srv, sendio))
-                {
-                  int r = dot_recv_length(srv, lenbuf);
-                  if (r > 0)
-                    {
-                      ssize_t resp_len = (ssize_t)((lenbuf[0] << 8) | lenbuf[1]);
-                      if ((size_t)resp_len <= daemon->packet_buff_sz)
-                        {
-                          int pr = dot_recv_payload(srv, (unsigned char *)daemon->packet, (size_t)resp_len);
-                          if (pr == (int)resp_len)
-                            {
-                              srv->flags |= SERV_GOT_TCP;
-                              rsize = resp_len;
-                            }
-                        }
-                    }
-                }
-
-              if (rsize < 0)
-                {
-                  /* I/O failed: close connection. */
-                  dot_close(srv);
-                  close(srv->tcpfd);
-                  srv->tcpfd = -1;
-                  /* Retry once only if we had a working connection
-                   * (server may have timed out and closed its end). */
-                  if (had_tcp)
-                    {
-                      srv->flags &= ~SERV_GOT_TCP;
-                      continue; /* retry with a fresh connection */
-                    }
-                }
-              break; /* success or no retry */
-            }
-
-          if (rsize > 0)
-            {
-              struct dns_header *resp = (struct dns_header *)daemon->packet;
-              /* Un-flip query-name case scrambling in the echoed question. */
-              extract_name(resp, (size_t)rsize, NULL,
-                           (char *)&forward->frec_src.encode_bitmap,
-                           EXTR_NAME_FLIP, 1);
+              /* Async op started: log the forward and let the state machine run. */
               if (!gotname)
                 strcpy(daemon->namebuff, "query");
               if (!(forward->flags & (FREC_DNSKEY_QUERY | FREC_DS_QUERY)))
@@ -649,17 +566,26 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
                                      (forward->flags & FREC_DNSKEY_QUERY) ?
                                      "dnssec-retry[DNSKEY]" : "dnssec-retry[DS]", 0);
 #endif
-              srv->queries++;
               forward->sentto = srv;
-              forward->forward_timestamp = dnsmasq_milliseconds();
-              daemon->metrics[METRIC_DNS_QUERIES_FORWARDED]++;
-              return_reply(now, forward, resp, rsize, STAT_OK);
-              return; /* forward freed by return_reply() */
+              srv->queries++;
+              forwarded = 1;
+              break; /* exit server loop; state machine takes over */
             }
-
-          /**** Pi-hole modification ****/
-          FTL_connection_error("DoT query failed", &srv->addr, -1);
-          /******************************/
+          else if (srv->dot_state != DOT_STATE_IDLE)
+            {
+              /* Server is busy with another in-flight query: try next. */
+              my_syslog(LOG_DEBUG|MS_DEBUG,
+                        "DoT: server %s busy (state %d), trying next",
+                        srv->tls_hostname, srv->dot_state);
+            }
+          else
+            {
+              /* dot_start() failed immediately (socket error, etc.). */
+              /**** Pi-hole modification ****/
+              FTL_connection_error("DoT async start failed", &srv->addr, -1);
+              /******************************/
+            }
+          /* All cases: fall through to next server. */
         }
       else
 #endif /* HAVE_MBEDTLS */
