@@ -60,6 +60,7 @@ jobs:
                 libevent-dev \
                 libidn2-dev libunistring-dev \
                 readline-dev \
+                xxd \
                 ca-certificates
 
               mkdir -p /tmp/ftl-build
