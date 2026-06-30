@@ -558,6 +558,8 @@ static void dot_fail(struct server *serv)
   FTL_connection_error("DoT async query failed", &serv->addr, -1);
   serv->failed_queries++;
 
+  struct frec *orphan = serv->dot_frec; /* save before clearing */
+
   if (serv->tls_ctx && serv->tcpfd != -1)
     dot_close(serv);
   if (serv->tcpfd != -1)
@@ -570,6 +572,11 @@ static void dot_fail(struct server *serv)
   serv->dot_sndbuf = NULL;
   serv->dot_frec   = NULL;
   serv->dot_state  = DOT_STATE_IDLE;
+
+  /* Immediately release the frec so the client gets a fast retry.
+   * Without this, frec->sentto keeps pointing at serv while dot_frec is
+   * NULL; the GC only reclaims it after TIMEOUT (10 s). */
+  if (orphan) frec_free(orphan);
 
   dot_start_pending(serv);
 }
