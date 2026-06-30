@@ -39,6 +39,22 @@ cmake .. -DCMAKE_BUILD_TYPE=Release -DSTATIC=false
 make -j$(nproc) pihole-FTL
 ```
 
+## Benchmark
+
+60 unique uncached queries per resolver vs unbound+pihole (each forwarding over DoT to the same provider).
+QEMU amd64/arm64 — relative comparison is valid, absolute ms are inflated vs bare metal.
+
+| Resolver | ok | avg | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| **★ Native DoT → Google** | 60/60 | 11.7ms | 11.5ms | 16.8ms | **17.4ms** |
+| Unbound+Pihole → Google DoT | 60/60 | 11.1ms | 9.4ms | 17.5ms | 51.8ms |
+| **★ Native DoT → Cloudflare** | 60/60 | 14.7ms | 14.5ms | 19.0ms | **22.6ms** |
+| Unbound+Pihole → Cloudflare DoT | 60/60 | 12.2ms | 10.8ms | 22.4ms | 54.7ms |
+| **★ Native DoT → Quad9** | 60/60 | 15.4ms | 15.0ms | 19.2ms | **24.8ms** |
+| Unbound+Pihole → Quad9 DoT | 60/60 | 12.1ms | 11.5ms | 16.3ms | 40.3ms |
+
+p99 tail latency is 2–3× better with native DoT across all providers. The extra pihole→unbound hop causes spikes at p99 (40–55ms) that native DoT avoids.
+
 ## Releases
 
 Pre-built binaries for all 5 architectures are published on the
