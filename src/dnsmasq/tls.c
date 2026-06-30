@@ -530,11 +530,27 @@ static void dot_start_pending(struct server *serv)
     {
       serv->dot_rspbuf = malloc(daemon->packet_buff_sz);
       if (!serv->dot_rspbuf)
-        { free(buf); serv->dot_sndbuf = NULL; dot_abort(serv); return; }
+        {
+          free(buf); serv->dot_sndbuf = NULL;
+          goto pending_fail;
+        }
     }
 
   if (dot_start_socket(serv) != 0)
-    dot_abort(serv);
+    {
+    pending_fail:
+      /* dot_abort() would clear dot_frec but not call free_frec(), leaving
+       * the frec orphaned (sentto==serv, nothing delivers a reply) for up to
+       * 4*TIMEOUT until GC.  Free it explicitly so the client gets a fast
+       * retry rather than a silent 40-second stall. */
+      {
+        struct frec *f  = serv->dot_frec;
+        serv->dot_frec  = NULL;
+        serv->dot_state = DOT_STATE_IDLE;
+        if (f) free_frec(f);
+      }
+      dot_start_pending(serv);
+    }
 }
 
 static void dot_fail(struct server *serv)
@@ -583,6 +599,20 @@ void dot_advance(time_t now, struct server *serv)
   /* Bail if the frec was already freed/recycled (query timed out). */
   if (!fwd || fwd->sentto != serv)
     { dot_abort(serv); return; }
+
+  /* Application-level timeout: kill the connection if the query has been
+   * in-flight for more than 2×TIMEOUT (20 s).  This catches slow/misbehaving
+   * upstreams that fire poll events but never deliver a complete response
+   * (e.g. stalled TLS handshake, throttled server).  Completely unresponsive
+   * servers (no poll events at all) are handled separately by the free_frec()
+   * sweep in forward.c. */
+  if (difftime(now, fwd->time) > 2 * TIMEOUT)
+    {
+      my_syslog(LOG_WARNING, "DoT: query to %s timed out after %ds",
+                serv->tls_hostname, 2 * TIMEOUT);
+      dot_fail(serv);
+      return;
+    }
 
   switch (serv->dot_state)
     {
