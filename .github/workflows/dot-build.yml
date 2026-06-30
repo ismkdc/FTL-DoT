@@ -58,6 +58,8 @@ jobs:
                 libcap-dev nettle-dev \
                 lua5.4-dev sqlite-dev \
                 libevent-dev \
+                libidn2-dev libunistring-dev \
+                readline-dev \
                 ca-certificates
 
               mkdir -p /tmp/ftl-build
