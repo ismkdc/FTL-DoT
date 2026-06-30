@@ -633,7 +633,7 @@ struct server {
   union mysockaddr addr, source_addr;
   char interface[IF_NAMESIZE+1];
   unsigned int ifindex; /* corresponding to interface, above */
-  struct serverfd *sfd; 
+  struct serverfd *sfd;
   int tcpfd;
   unsigned int queries, failed_queries, nxdomain_replies, retrys;
   unsigned int query_latency, mma_latency;
@@ -641,6 +641,11 @@ struct server {
   int forwardcount;
 #ifdef HAVE_LOOP
   u32 uid;
+#endif
+#ifdef HAVE_MBEDTLS
+  /* DoT support (FTL-DoT fork). NULL tls_hostname = plain DNS. */
+  char *tls_hostname;   /* SNI + cert verification hostname; heap-allocated */
+  void *tls_ctx;        /* struct tls_server_ctx *; opaque to avoid mbedtls headers here */
 #endif
 };
 

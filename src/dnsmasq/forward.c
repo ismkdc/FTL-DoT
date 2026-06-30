@@ -16,6 +16,9 @@
 
 #include "dnsmasq.h"
 #include "dnsmasq_interface.h"
+#ifdef HAVE_MBEDTLS
+#  include "tls.h"
+#endif
 
 static struct frec *get_new_frec(time_t now, struct server *serv, int force);
 static struct frec *lookup_frec(time_t now, char *target, int class, int rrtype, int id, int flags, int flagmask);
@@ -2238,7 +2241,7 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 	  if (fatal || (!data_sent && (where = 1) && connect(serv->tcpfd, &serv->addr.sa, sa_len(&serv->addr)) == -1))
 	    {
 	      int port;
-	      
+
 	    failed:
 	      /**** Pi-hole modification ****/
 	      FTL_connection_error("TCP connection failed", &serv->addr, where);
@@ -2246,17 +2249,77 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 
 	      port = prettyprint_addr(&serv->addr, daemon->addrbuff);
 	      my_syslog(LOG_DEBUG|MS_DEBUG, _("TCP connection failed to %s#%d"), daemon->addrbuff, port);
+#ifdef HAVE_MBEDTLS
+	      if (serv->tls_hostname)
+		dot_close(serv);
+#endif
 	      close(serv->tcpfd);
 	      serv->tcpfd = -1;
 	      continue;
 	    }
-	  
+
+#ifdef HAVE_MBEDTLS
+	  /* ── FTL-DoT: TLS handshake after TCP connect ── */
+	  if (serv->tls_hostname && dot_handshake(serv) != 0)
+	    {
+	      int port = prettyprint_addr(&serv->addr, daemon->addrbuff);
+	      my_syslog(LOG_WARNING, "DoT: TLS handshake failed with %s#%d (%s)",
+		         daemon->addrbuff, port, serv->tls_hostname);
+	      FTL_connection_error("DoT handshake failed", &serv->addr, where);
+	      dot_close(serv);
+	      close(serv->tcpfd);
+	      serv->tcpfd = -1;
+	      continue;
+	    }
+#endif
+
 	  daemon->serverarray[first]->last_server = start;
 	  serv->flags &= ~SERV_GOT_TCP;
 	}
-      
+
+#ifdef HAVE_MBEDTLS
+      /* ── FTL-DoT: I/O via TLS ── */
+      if (serv->tls_hostname)
+	{
+	  unsigned char lenbuf[2];
+	  int io_ok = 1;
+
+	  if (!data_sent)
+	    {
+	      if (!dot_send(serv, sendio))
+		{ where = 2; io_ok = 0; }
+	    }
+
+	  if (io_ok)
+	    {
+	      int r = dot_recv_length(serv, lenbuf);
+	      if (r <= 0) { where = 3; io_ok = 0; }
+	      else
+		{
+		  rsize = (unsigned int)((lenbuf[0] << 8) | lenbuf[1]);
+		  if (!expand_buf(recvbuff, rsize)) { where = 4; io_ok = 0; }
+		  else if (dot_recv_payload(serv, recvbuff->iov_base, rsize) != (int)rsize)
+		    { where = 5; io_ok = 0; }
+		}
+	    }
+
+	  if (!io_ok)
+	    {
+	      dot_close(serv);
+	      if (serv->flags & SERV_GOT_TCP)
+		{
+		  close(serv->tcpfd);
+		  serv->tcpfd = -1;
+		  goto retry;
+		}
+	      else
+		goto failed;
+	    }
+	}
+      else
+#endif
       /* We use the _ONCE variant of read_write() here because we've set a timeout on the tcp socket
-	 and wish to abort if the whole data is not read/written within the timeout. */      
+	 and wish to abort if the whole data is not read/written within the timeout. */
       if ((!data_sent && (where = 2) && !read_writev(serv->tcpfd, sendio, 2, RW_WRITE_ONCE)) ||
 	   ((where = 3) && !read_write(serv->tcpfd, (unsigned char *)&length, sizeof(length), RW_READ_ONCE)) ||
 	   ((where = 4) && !expand_buf(recvbuff, (rsize = ntohs(length)))) ||

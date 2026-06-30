@@ -58,6 +58,10 @@
 #include "procps.h"
 // init_api_sessions()
 #include "api/api.h"
+#ifdef HAVE_MBEDTLS
+// dot_global_init()
+#include "dnsmasq/tls.h"
+#endif
 
 // Public prototypes (defined in this file, called from other translation units)
 void FTL_dump_cache_stats(void);
@@ -3523,6 +3527,11 @@ void FTL_fork_and_bind_sockets(struct passwd *ent_pw, bool dnsmasq_start)
 	// do this here as we need the database to be properly initialized
 	// in case we need to store the verification result
 	verify_FTL(false);
+
+#ifdef HAVE_MBEDTLS
+	// Initialize global DoT (DNS-over-TLS) TLS context (FTL-DoT)
+	dot_global_init();
+#endif
 
 	// Handle real-time signals in this process (and its children)
 	// Helper processes are already split from the main instance

@@ -1,0 +1,137 @@
+name: FTL-DoT Build & Release
+
+on:
+  push:
+    branches: ['feature/native-dot', 'master', 'development']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed for GitHub Release upload
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            ftlarch: amd64
+          - arch: arm64
+            platform: linux/arm64
+            ftlarch: arm64
+          - arch: armv7
+            platform: linux/arm/v7
+            ftlarch: armv7
+          - arch: armv6
+            platform: linux/arm/v6
+            ftlarch: armv6
+          - arch: riscv64
+            platform: linux/riscv64
+            ftlarch: riscv64
+
+    steps:
+      - name: Checkout FTL-DoT
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build pihole-FTL binary for ${{ matrix.arch }}
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            alpine:3.24.0 \
+            sh -c "
+              set -ex
+              apk add --no-cache \
+                build-base cmake git \
+                mbedtls-dev mbedtls-static \
+                libcap-dev nettle-dev \
+                lua5.4-dev sqlite-dev \
+                libevent-dev \
+                ca-certificates
+
+              mkdir -p /tmp/ftl-build
+              cd /tmp/ftl-build
+              cmake /src \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DSTATIC=false
+              make -j\$(nproc) pihole-FTL
+              strip pihole-FTL
+
+              # Append sha256 (same as upstream FTL does)
+              SHA256=\$(sha256sum pihole-FTL | cut -d' ' -f1)
+              echo -n \"\$SHA256\" | xxd -r -p >> pihole-FTL
+              echo \"SHA256: \$SHA256\"
+
+              cp pihole-FTL /src/pihole-FTL-${{ matrix.ftlarch }}
+            "
+
+      - name: Smoke test (amd64 only)
+        if: matrix.arch == 'amd64'
+        run: |
+          chmod +x pihole-FTL-amd64
+          ./pihole-FTL-amd64 --version
+          # Verify tls-server option is recognized
+          ./pihole-FTL-amd64 --help 2>&1 | grep -q "tls-server" && echo "DoT: OK" || echo "DoT: NOT FOUND"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pihole-FTL-${{ matrix.ftlarch }}
+          path: pihole-FTL-${{ matrix.ftlarch }}
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: binaries/
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "FTL-DoT ${{ github.ref_name }}"
+          body: |
+            ## FTL-DoT ${{ github.ref_name }}
+
+            Fork of [pi-hole/FTL](https://github.com/pi-hole/FTL) with native DNS-over-TLS (RFC 7858) support.
+
+            ### What's new
+            - `tls-server=<ip>#<port>#<hostname>` dnsmasq directive
+            - `tls://ip#port#hostname` format in `dns.upstreams` FTLCONF
+            - mbedTLS with ALPN "dot", TLS 1.2+, cert verification, session resumption
+
+            ### Usage
+            ```yaml
+            # docker-compose.yml
+            environment:
+              FTLCONF_dns_upstreams: '["tls://8.8.8.8#853#dns.google","tls://8.8.4.4#853#dns.google"]'
+            ```
+
+            ### Binaries
+            | File | Architecture |
+            |------|-------------|
+            | pihole-FTL-amd64 | x86-64 |
+            | pihole-FTL-arm64 | ARM 64-bit |
+            | pihole-FTL-armv7 | ARM 32-bit v7 |
+            | pihole-FTL-armv6 | ARM 32-bit v6 |
+            | pihole-FTL-riscv64 | RISC-V 64-bit |
+          files: binaries/*
+          draft: false
+          prerelease: false

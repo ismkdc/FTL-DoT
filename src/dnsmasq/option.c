@@ -205,6 +205,7 @@ struct myoption {
 #define LOPT_LEASEQUERY    389
 #define LOPT_SPLIT_RELAY   390
 #define LOPT_LOG_MALLOC    391
+#define LOPT_TLS_SERVER    392  /* --tls-server (FTL-DoT) */
 
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -248,6 +249,7 @@ static const struct myoption opts[] =
     { "pid-file", 2, 0, 'x' },
     { "strict-order", 0, 0, 'o' },
     { "server", 1, 0, 'S' },
+    { "tls-server", 1, 0, LOPT_TLS_SERVER },  /* FTL-DoT */
     { "rev-server", 1, 0, LOPT_REV_SERV },
     { "local", 1, 0, LOPT_LOCAL },
     { "address", 1, 0, 'A' },
@@ -479,6 +481,7 @@ static struct {
   { 'r', ARG_DUP, "<path>", gettext_noop("Specify path to resolv.conf (defaults to %s)."), RESOLVFILE }, 
   { LOPT_SERVERS_FILE, ARG_ONE, "<path>", gettext_noop("Specify path to file with server= options"), NULL },
   { 'S', ARG_DUP, "/<domain>/<ipaddr>", gettext_noop("Specify address(es) of upstream servers with optional domains."), NULL },
+  { LOPT_TLS_SERVER, ARG_DUP, "<ipaddr>#<port>#<hostname>", gettext_noop("Specify upstream DNS-over-TLS server (FTL-DoT). Port defaults to 853."), NULL },
   { LOPT_REV_SERV, ARG_DUP, "<addr>/<prefix>,<ipaddr>", gettext_noop("Specify address of upstream servers for reverse address queries"), NULL },
   { LOPT_LOCAL, ARG_DUP, "/<domain>/", gettext_noop("Never forward queries to specified domains."), NULL },
   { 's', ARG_DUP, "<domain>[,<range>]", gettext_noop("Specify the domain to be assigned in DHCP leases."), NULL },
@@ -3160,6 +3163,82 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	
      	break;
       }
+
+    case LOPT_TLS_SERVER: /* --tls-server=<ip>#<port>#<tls_hostname>  (FTL-DoT) */
+#ifdef HAVE_MBEDTLS
+      {
+	/* Format: <ip>[#<port>]#<tls_hostname>
+	 * The tls_hostname (SNI / cert verification name) is always the LAST
+	 * '#'-separated token and must contain at least one dot (it's a domain).
+	 * Port defaults to 853 when omitted.
+	 * Examples:
+	 *   8.8.8.8#853#dns.google
+	 *   1.1.1.1#cloudflare-dns.com          (port 853 implied)
+	 */
+	char *err;
+	union mysockaddr serv_addr, source_addr;
+	char interface[IF_NAMESIZE+1];
+	u16 flags = 0;
+	struct server_details sdetails;
+
+	unhide_metas(arg);
+
+	/* Split off the last '#'-separated field as tls_hostname. */
+	char *tls_hostname = NULL;
+	char *p = strrchr(arg, '#');
+	if (!p || strchr(p + 1, '.') == NULL)
+	  ret_err(_("tls-server: missing or invalid TLS hostname (use ip#port#hostname or ip#hostname)"));
+
+	tls_hostname = p + 1;
+	*p = '\0';  /* terminate so arg is now "ip" or "ip#port" */
+
+	/* If no port remains in arg, default to 853. */
+	if (strchr(arg, '#') == NULL)
+	  {
+	    /* Append '#853' so parse_server sees the port. */
+	    char portbuf[strlen(arg) + 5];
+	    snprintf(portbuf, sizeof(portbuf), "%s#853", arg);
+	    arg = portbuf;
+	  }
+
+	memset(&sdetails, 0, sizeof(sdetails));
+	sdetails.addr = &serv_addr;
+	sdetails.source_addr = &source_addr;
+	sdetails.interface = interface;
+	sdetails.flags = &flags;
+
+	if ((err = parse_server(arg, &sdetails)))
+	  ret_err(err);
+
+	while (parse_server_next(&sdetails))
+	  {
+	    if ((err = parse_server_addr(&sdetails)))
+	      ret_err(err);
+
+	    struct server *new_serv;
+	    if (!add_update_server(flags, sdetails.addr, sdetails.source_addr,
+				   interface, "", NULL))
+	      ret_err(_("tls-server: failed to add server"));
+
+	    /* Tag the freshly-added server with the TLS hostname. */
+	    new_serv = daemon->servers;
+	    if (new_serv)
+	      {
+		free(new_serv->tls_hostname);
+		new_serv->tls_hostname = strdup(tls_hostname);
+		if (!new_serv->tls_hostname)
+		  ret_err(_("tls-server: out of memory"));
+	      }
+	  }
+
+	if (sdetails.orig_hostinfo)
+	  freeaddrinfo(sdetails.orig_hostinfo);
+
+	break;
+      }
+#else
+      ret_err(_("tls-server: FTL was built without mbedTLS support"));
+#endif
 
     case LOPT_REV_SERV: /* --rev-server */
       {
