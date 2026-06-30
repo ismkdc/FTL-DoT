@@ -65,7 +65,14 @@ static struct {
 	{ "Quad9 (filtered, DNSSEC)", {"9.9.9.9", "149.112.112.112" }, { "2620:fe::fe", "2620:fe::9" } },
 	{ "Quad9 (unfiltered, no DNSSEC)", { "9.9.9.10", "149.112.112.10" }, { "2620:fe::10", "2620:fe::fe:10" } },
 	{ "Quad9 (filtered, ECS, DNSSEC)", { "9.9.9.11", "149.112.112.11" }, { "2620:fe::11", "2620:fe::fe:11" } },
-	{ "Cloudflare (DNSSEC)", { "1.1.1.1", "1.0.0.1" }, { "2606:4700:4700::1111", "2606:4700:4700::1001" } }
+	{ "Cloudflare (DNSSEC)", { "1.1.1.1", "1.0.0.1" }, { "2606:4700:4700::1111", "2606:4700:4700::1001" } },
+	/* DNS-over-TLS providers (tls://ip#port#hostname format) */
+	{ "Google DoT", { "tls://8.8.8.8#853#dns.google", "tls://8.8.4.4#853#dns.google" }, { NULL, NULL } },
+	{ "Cloudflare DoT", { "tls://1.1.1.1#853#cloudflare-dns.com", "tls://1.0.0.1#853#cloudflare-dns.com" }, { NULL, NULL } },
+	{ "Cloudflare DoT (malware block)", { "tls://1.1.1.2#853#cloudflare-dns.com", "tls://1.0.0.2#853#cloudflare-dns.com" }, { NULL, NULL } },
+	{ "Quad9 DoT", { "tls://9.9.9.9#853#dns.quad9.net", "tls://149.112.112.112#853#dns.quad9.net" }, { NULL, NULL } },
+	{ "AdGuard DoT", { "tls://94.140.14.14#853#dns.adguard.com", "tls://94.140.15.15#853#dns.adguard.com" }, { NULL, NULL } },
+	{ "Mullvad DoT", { "tls://194.242.2.2#853#dns.mullvad.net", NULL }, { NULL, NULL } }
 };
 
 // The following functions are used to create the JSON output
