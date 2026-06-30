@@ -628,10 +628,16 @@ void dot_advance(time_t now, struct server *serv)
         /* Check whether the non-blocking connect() completed. */
         int err = 0;
         socklen_t elen = sizeof(err);
-        if (getsockopt(serv->tcpfd, SOL_SOCKET, SO_ERROR, &err, &elen) == -1 || err != 0)
+        if (getsockopt(serv->tcpfd, SOL_SOCKET, SO_ERROR, &err, &elen) == -1)
+          { dot_fail(serv); return; }
+        /* EAGAIN/EINPROGRESS: connection still in progress (spurious POLLOUT on
+         * some kernels / Docker networking stacks).  Stay in CONNECTING state. */
+        if (err == EAGAIN || err == EINPROGRESS)
+          return;
+        if (err != 0)
           {
             my_syslog(LOG_ERR, "DoT: connect to %s failed: %s",
-                      serv->tls_hostname, strerror(err ? err : errno));
+                      serv->tls_hostname, strerror(err));
             dot_fail(serv); return;
           }
         if (dot_nb_handshake_setup(serv) != 0) { dot_fail(serv); return; }
