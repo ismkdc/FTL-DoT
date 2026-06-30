@@ -8,10 +8,18 @@
 
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/ctr_drbg.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/error.h>
+#include <mbedtls/version.h>
+
+/* mbedTLS 4.x replaced entropy/ctr_drbg with PSA Crypto. */
+#if MBEDTLS_VERSION_MAJOR >= 4
+#  include <psa/crypto.h>
+#  include <mbedtls/psa_util.h>
+#else
+#  include <mbedtls/entropy.h>
+#  include <mbedtls/ctr_drbg.h>
+#endif
 
 /* Attached to each struct server that uses DoT.
  * Allocated once on first connect, freed when server is removed. */

@@ -3,9 +3,10 @@
  *
  * Design:
  *  - mbedTLS is already linked into FTL for the web server; we reuse it.
- *  - One global entropy + CTR-DRBG context (thread-safe after init).
+ *  - mbedTLS 3.x: global entropy + CTR-DRBG RNG (thread-safe via mutex).
+ *  - mbedTLS 4.x: PSA Crypto replaces entropy/drbg; thread-safe natively.
  *  - Per-server: tls_server_ctx holds ssl_config (CA chain, ALPN, TLS ver)
- *    and ssl_session for resumption. These persist as long as the server exists.
+ *    and ssl_session for resumption.  These persist as long as the server exists.
  *  - Per-connection: ssl_context and net_context are reset on each new TCP
  *    connection but reuse the per-server config.  Session resumption avoids the
  *    full handshake RTT on reconnect.
@@ -22,19 +23,25 @@
 
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/ctr_drbg.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/error.h>
-#include <pthread.h>
+#include <mbedtls/version.h>
 #include <string.h>
 #include <errno.h>
+
+#if MBEDTLS_VERSION_MAJOR >= 4
+#  include <psa/crypto.h>
+#  include <mbedtls/psa_util.h>
+#else
+#  include <mbedtls/entropy.h>
+#  include <mbedtls/ctr_drbg.h>
+#  include <pthread.h>
+#endif
 
 /* System CA bundle path (Alpine / Debian / OpenWrt all ship this). */
 #ifndef DOT_CA_BUNDLE
 #  define DOT_CA_BUNDLE "/etc/ssl/cert.pem"
 #endif
-/* Fall-back path used by many distros. */
 #ifndef DOT_CA_BUNDLE2
 #  define DOT_CA_BUNDLE2 "/etc/ssl/certs/ca-certificates.crt"
 #endif
@@ -47,12 +54,13 @@ static const char *dot_alpn[] = { "dot", NULL };
 
 /* ── Global state ──────────────────────────────────────────────────────── */
 
+static int g_initialized = 0;
+
+#if MBEDTLS_VERSION_MAJOR < 4
 static mbedtls_entropy_context  g_entropy;
 static mbedtls_ctr_drbg_context g_ctr_drbg;
 static pthread_mutex_t          g_rng_lock = PTHREAD_MUTEX_INITIALIZER;
-static int                      g_initialized = 0;
 
-/* Thread-safe RNG callback. */
 static int dot_rng(void *p_rng, unsigned char *output, size_t len)
 {
   (void)p_rng;
@@ -62,12 +70,21 @@ static int dot_rng(void *p_rng, unsigned char *output, size_t len)
   pthread_mutex_unlock(&g_rng_lock);
   return ret;
 }
+#endif
 
 void dot_global_init(void)
 {
   if (g_initialized)
     return;
 
+#if MBEDTLS_VERSION_MAJOR >= 4
+  psa_status_t psa_ret = psa_crypto_init();
+  if (psa_ret != PSA_SUCCESS)
+    {
+      my_syslog(LOG_ERR, "DoT: psa_crypto_init() failed (%d)", (int)psa_ret);
+      return;
+    }
+#else
   mbedtls_entropy_init(&g_entropy);
   mbedtls_ctr_drbg_init(&g_ctr_drbg);
 
@@ -79,9 +96,11 @@ void dot_global_init(void)
       dot_log_error("DoT: RNG seed failed", ret);
       return;
     }
+#endif
 
   g_initialized = 1;
-  my_syslog(LOG_INFO, "DoT: global TLS context initialized");
+  my_syslog(LOG_INFO, "DoT: global TLS context initialized (mbedTLS %d.%d)",
+            MBEDTLS_VERSION_MAJOR, MBEDTLS_VERSION_MINOR);
 }
 
 /* ── Per-server init ───────────────────────────────────────────────────── */
@@ -111,7 +130,6 @@ int dot_server_init(struct server *serv)
   int ret = mbedtls_x509_crt_parse_file(&ctx->cacert, DOT_CA_BUNDLE);
   if (ret != 0)
     {
-      /* Try fall-back path. */
       ret = mbedtls_x509_crt_parse_file(&ctx->cacert, DOT_CA_BUNDLE2);
       if (ret != 0)
         {
@@ -134,7 +152,14 @@ int dot_server_init(struct server *serv)
   /* Require valid certificate (RFC 7858 §4). */
   mbedtls_ssl_conf_authmode(&ctx->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
   mbedtls_ssl_conf_ca_chain(&ctx->conf, &ctx->cacert, NULL);
+
+  /* RNG: PSA on mbedTLS 4.x, classic ctr_drbg on 3.x. */
+#if MBEDTLS_VERSION_MAJOR >= 4
+  mbedtls_ssl_conf_rng(&ctx->conf, mbedtls_psa_get_random,
+                        MBEDTLS_PSA_RANDOM_STATE);
+#else
   mbedtls_ssl_conf_rng(&ctx->conf, dot_rng, NULL);
+#endif
 
   /* Minimum TLS 1.2; prefer TLS 1.3 when available. */
   mbedtls_ssl_conf_min_tls_version(&ctx->conf, MBEDTLS_TLS_VERSION_1_2);
@@ -173,7 +198,6 @@ int dot_handshake(struct server *serv)
       ctx = serv->tls_ctx;
     }
 
-  /* Reset SSL context for a new connection (reuses conf). */
   mbedtls_ssl_free(&ctx->ssl);
   mbedtls_ssl_init(&ctx->ssl);
 
@@ -184,7 +208,6 @@ int dot_handshake(struct server *serv)
       return -1;
     }
 
-  /* SNI + certificate hostname verification. */
   ret = mbedtls_ssl_set_hostname(&ctx->ssl, serv->tls_hostname);
   if (ret != 0)
     {
@@ -192,16 +215,13 @@ int dot_handshake(struct server *serv)
       return -1;
     }
 
-  /* Attach existing TCP fd to mbedTLS BIO. */
   ctx->net.fd = serv->tcpfd;
   mbedtls_ssl_set_bio(&ctx->ssl, &ctx->net,
                       mbedtls_net_send, mbedtls_net_recv, NULL);
 
-  /* Attempt session resumption to skip full handshake RTT. */
   if (ctx->sess_saved)
     mbedtls_ssl_set_session(&ctx->ssl, &ctx->session);
 
-  /* Perform TLS handshake. */
   int tries = 0;
   while ((ret = mbedtls_ssl_handshake(&ctx->ssl)) != 0)
     {
@@ -212,7 +232,6 @@ int dot_handshake(struct server *serv)
       return -1;
     }
 
-  /* Save session for next reconnect. */
   if (!ctx->sess_saved)
     mbedtls_ssl_session_init(&ctx->session);
   ret = mbedtls_ssl_get_session(&ctx->ssl, &ctx->session);
@@ -231,8 +250,6 @@ int dot_send(struct server *serv, struct iovec *sendio)
 {
   struct tls_server_ctx *ctx = serv->tls_ctx;
 
-  /* Gather 2-byte length prefix (sendio[0]) + payload (sendio[1]) into one
-   * contiguous buffer so mbedtls_ssl_write sees a single record boundary. */
   size_t total = sendio[0].iov_len + sendio[1].iov_len;
   unsigned char *buf = malloc(total);
   if (!buf)
@@ -317,15 +334,12 @@ void dot_close(struct server *serv)
   if (!ctx)
     return;
 
-  /* Try close_notify; ignore errors (TCP may already be gone). */
   int ret, tries = 0;
   do {
     ret = mbedtls_ssl_close_notify(&ctx->ssl);
   } while ((ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
             ret == MBEDTLS_ERR_SSL_WANT_READ) && ++tries < 10);
 
-  /* Do NOT free ctx->ssl here; dot_handshake() will mbedtls_ssl_free + re-init
-   * it on the next connection.  Session is preserved for resumption. */
   ctx->net.fd = -1;
 }
 
