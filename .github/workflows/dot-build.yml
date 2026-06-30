@@ -65,6 +65,9 @@ jobs:
                 xxd \
                 ca-certificates
 
+              # Allow git to operate on the mounted workspace (owned by runner, not root)
+              git config --global --add safe.directory /src
+
               mkdir -p /tmp/ftl-build
               cd /tmp/ftl-build
               cmake /src \
