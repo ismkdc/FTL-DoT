@@ -234,8 +234,9 @@ int dot_handshake(struct server *serv)
       return -1;
     }
 
-  if (!ctx->sess_saved)
-    mbedtls_ssl_session_init(&ctx->session);
+  if (ctx->sess_saved)
+    mbedtls_ssl_session_free(&ctx->session);
+  mbedtls_ssl_session_init(&ctx->session);
   ret = mbedtls_ssl_get_session(&ctx->ssl, &ctx->session);
   ctx->sess_saved = (ret == 0) ? 1 : 0;
 
@@ -654,8 +655,10 @@ void dot_advance(time_t now, struct server *serv)
         if (ret != 0)
           { dot_log_error("DoT: handshake failed", ret); dot_fail(serv); return; }
 
-        /* Save session for resumption. */
-        if (!ctx->sess_saved) mbedtls_ssl_session_init(&ctx->session);
+        /* Save session for resumption. Free old data first to avoid leak
+         * on reconnect (get_session does a deep copy with heap allocations). */
+        if (ctx->sess_saved) mbedtls_ssl_session_free(&ctx->session);
+        mbedtls_ssl_session_init(&ctx->session);
         if (mbedtls_ssl_get_session(&ctx->ssl, &ctx->session) == 0) ctx->sess_saved = 1;
 
         /* RFC 7858 §4: verify ALPN "dot". */
