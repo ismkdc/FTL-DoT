@@ -547,7 +547,7 @@ static void dot_start_pending(struct server *serv)
         struct frec *f  = serv->dot_frec;
         serv->dot_frec  = NULL;
         serv->dot_state = DOT_STATE_IDLE;
-        if (f) free_frec(f);
+        if (f) frec_free(f);
       }
       dot_start_pending(serv);
     }

@@ -3410,6 +3410,12 @@ static void free_frec(struct frec *f)
 #endif
 }
 
+/* Public wrapper so tls.c can release a frec from the orphan-frec fix
+ * without exposing the static free_frec() across translation units. */
+void frec_free(struct frec *f)
+{
+  free_frec(f);
+}
 
 
 /* Impose an absolute

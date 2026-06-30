@@ -1635,6 +1635,7 @@ int tcp_from_udp(time_t now, int status, struct dns_header *header, ssize_t *n,
 void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 		 union mysockaddr *local_addr, struct in_addr netmask, int auth_dns);
 void server_gone(struct server *server);
+void frec_free(struct frec *f); /* public wrapper around static free_frec() */
 int send_from(int fd, int nowild, char *packet, size_t len, 
 	       union mysockaddr *to, union all_addr *source,
 	       unsigned int iface);
