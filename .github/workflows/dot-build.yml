@@ -87,9 +87,11 @@ jobs:
             -v "${{ github.workspace }}:/work" \
             alpine:3.24 \
             sh -c "
-              apk add --no-cache libcap lua5.4-libs sqlite-libs nettle libidn2 libevent readline mbedtls ca-certificates
+              apk add --no-cache libgcc libcap lua5.4-libs sqlite-libs nettle libidn2 libevent readline mbedtls ca-certificates binutils
+              echo '=== Version ==='
               /work/pihole-FTL-amd64 --version
-              /work/pihole-FTL-amd64 --help 2>&1 | grep -q 'tls-server' && echo 'DoT: OK' || echo 'DoT: NOT FOUND'
+              echo '=== DoT symbols ==='
+              strings /work/pihole-FTL-amd64 | grep -q 'dot_global_init' && echo 'DoT: OK' || { echo 'DoT: NOT FOUND'; exit 1; }
             "
 
       - name: Upload binary artifact
