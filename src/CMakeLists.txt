@@ -518,6 +518,7 @@ if(LIBMBEDCRYPTO AND LIBMBEDX509 AND LIBMBEDTLS AND USE_MBED_TLS)
     # Enable TLS support in civetweb if mbedTLS is selected and available
     message(STATUS "Building FTL with TLS support: YES")
     target_compile_definitions(core PRIVATE HAVE_MBEDTLS)
+    target_compile_definitions(dnsmasq PRIVATE HAVE_MBEDTLS)
     target_compile_definitions(civetweb PRIVATE USE_MBEDTLS)
     target_compile_definitions(webserver PRIVATE HAVE_MBEDTLS)
     # Link against the mbedTLS libraries, the order is important (!)

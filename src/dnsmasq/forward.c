@@ -16,6 +16,9 @@
 
 #include "dnsmasq.h"
 #include "dnsmasq_interface.h"
+#ifdef HAVE_MBEDTLS
+#  include "tls.h"
+#endif
 
 static struct frec *get_new_frec(time_t now, struct server *serv, int force);
 static struct frec *lookup_frec(time_t now, char *target, int class, int rrtype, int id, int flags, int flagmask);
@@ -536,59 +539,179 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
      packet straight away (helps modem users when offline)  */
 
   while (1)
-    { 
-      int fd;
+    {
       struct server *srv = daemon->serverarray[start];
-      
-      if ((fd = allocate_rfd(&forward->rfds, srv)) != -1)
-	{
-	  
-#ifdef HAVE_CONNTRACK
-	  /* Copy connection mark of incoming query to outgoing connection. */
-	  if (option_bool(OPT_CONNTRACK))
-	    set_outgoing_mark(forward, fd);
-#endif
-	  if (retry_send(sendto(fd, (char *)header, plen, 0,
-				&srv->addr.sa,
-				sa_len(&srv->addr))))
-	    continue;
-	  
-	  if (errno == 0)
-	    {
-#ifdef HAVE_DUMPFILE
-	      dump_packet_udp(DUMP_UP_QUERY, (void *)header, plen, NULL, &srv->addr, fd);
-#endif
-	      
-	      /* Keep info in case we want to re-send this packet */
-	      daemon->srv_save = srv;
-	      daemon->packet_len = plen;
-	      daemon->fd_save = fd;
-	      
-	       if (!gotname)
-		 strcpy(daemon->namebuff, "query");
-	       
-	       if (!(forward->flags & (FREC_DNSKEY_QUERY | FREC_DS_QUERY)))
-		 log_query_mysockaddr(F_SERVER | F_FORWARD, daemon->namebuff,
-				      &srv->addr, NULL, 0);
+
+#ifdef HAVE_MBEDTLS
+      /* DoT server: resolve synchronously via TCP+TLS instead of UDP.
+       * On success, return_reply() processes and delivers the answer then
+       * frees the frec — we just return.  On failure, fall through to
+       * try the next server in the array. */
+      if (srv->tls_hostname)
+        {
+          u16 tcp_len = htons((u16)plen);
+          struct iovec sendio[2];
+          unsigned char lenbuf[2];
+          int had_tcp = 0;       /* had a working connection before this query */
+          int dot_tries;
+          ssize_t rsize = -1;
+          struct timeval tv;
+
+          sendio[0].iov_base = &tcp_len;
+          sendio[0].iov_len  = 2;
+          sendio[1].iov_base = (void *)header;
+          sendio[1].iov_len  = plen;
+
+          /* Retry loop: at most once (fresh connect → send/recv fails → reconnect). */
+          for (dot_tries = 0; dot_tries < 2; dot_tries++)
+            {
+              rsize = -1;
+
+              /* Open TCP connection if we don't have one already. */
+              if (srv->tcpfd == -1)
+                {
+                  srv->tcpfd = socket(srv->addr.sa.sa_family, SOCK_STREAM, 0);
+                  if (srv->tcpfd == -1)
+                    break;
+
+                  tv.tv_sec = TCP_TIMEOUT; tv.tv_usec = 0;
+                  setsockopt(srv->tcpfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+                  tv.tv_sec += TCP_TIMEOUT;
+                  setsockopt(srv->tcpfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+                  if (!local_bind(srv->tcpfd, &srv->source_addr, srv->interface, 0, 1))
+                    { close(srv->tcpfd); srv->tcpfd = -1; break; }
+
+                  if (connect(srv->tcpfd, &srv->addr.sa, sa_len(&srv->addr)) == -1)
+                    { close(srv->tcpfd); srv->tcpfd = -1; break; }
+
+                  if (dot_handshake(srv) != 0)
+                    { close(srv->tcpfd); srv->tcpfd = -1; break; }
+
+                  srv->flags &= ~SERV_GOT_TCP;
+                  had_tcp = 0; /* fresh; don't retry on first I/O failure */
+                }
+              else
+                had_tcp = (srv->flags & SERV_GOT_TCP) ? 1 : 0;
+
+              /* Send DNS query with 2-byte length prefix, receive response. */
+              if (dot_send(srv, sendio))
+                {
+                  int r = dot_recv_length(srv, lenbuf);
+                  if (r > 0)
+                    {
+                      ssize_t resp_len = (ssize_t)((lenbuf[0] << 8) | lenbuf[1]);
+                      int pr = dot_recv_payload(srv, (unsigned char *)daemon->packet, (size_t)resp_len);
+                      if ((size_t)resp_len <= daemon->packet_buff_sz && pr == (int)resp_len)
+                        {
+                          srv->flags |= SERV_GOT_TCP;
+                          rsize = resp_len;
+                        }
+                    }
+                }
+
+              if (rsize < 0)
+                {
+                  /* I/O failed: close connection. */
+                  dot_close(srv);
+                  close(srv->tcpfd);
+                  srv->tcpfd = -1;
+                  /* Retry once only if we had a working connection
+                   * (server may have timed out and closed its end). */
+                  if (had_tcp)
+                    {
+                      srv->flags &= ~SERV_GOT_TCP;
+                      continue; /* retry with a fresh connection */
+                    }
+                }
+              break; /* success or no retry */
+            }
+
+          if (rsize > 0)
+            {
+              struct dns_header *resp = (struct dns_header *)daemon->packet;
+              /* Un-flip query-name case scrambling in the echoed question. */
+              extract_name(resp, (size_t)rsize, NULL,
+                           (char *)&forward->frec_src.encode_bitmap,
+                           EXTR_NAME_FLIP, 1);
+              if (!gotname)
+                strcpy(daemon->namebuff, "query");
+              if (!(forward->flags & (FREC_DNSKEY_QUERY | FREC_DS_QUERY)))
+                log_query_mysockaddr(F_SERVER | F_FORWARD, daemon->namebuff,
+                                     &srv->addr, NULL, 0);
 #ifdef HAVE_DNSSEC
-	       else
-		 log_query_mysockaddr(F_NOEXTRA | F_DNSSEC | F_SERVER, daemon->namebuff, &srv->addr,
-				      (forward->flags & FREC_DNSKEY_QUERY) ? "dnssec-retry[DNSKEY]" : "dnssec-retry[DS]", 0);
+              else
+                log_query_mysockaddr(F_NOEXTRA | F_DNSSEC | F_SERVER,
+                                     daemon->namebuff, &srv->addr,
+                                     (forward->flags & FREC_DNSKEY_QUERY) ?
+                                     "dnssec-retry[DNSKEY]" : "dnssec-retry[DS]", 0);
+#endif
+              srv->queries++;
+              forward->sentto = srv;
+              forward->forward_timestamp = dnsmasq_milliseconds();
+              daemon->metrics[METRIC_DNS_QUERIES_FORWARDED]++;
+              return_reply(now, forward, resp, rsize, STAT_OK);
+              return; /* forward freed by return_reply() */
+            }
+
+          /**** Pi-hole modification ****/
+          FTL_connection_error("DoT query failed", &srv->addr, -1);
+          /******************************/
+        }
+      else
+#endif /* HAVE_MBEDTLS */
+        {
+          int fd;
+          if ((fd = allocate_rfd(&forward->rfds, srv)) != -1)
+	    {
+
+#ifdef HAVE_CONNTRACK
+	      /* Copy connection mark of incoming query to outgoing connection. */
+	      if (option_bool(OPT_CONNTRACK))
+	        set_outgoing_mark(forward, fd);
+#endif
+	      if (retry_send(sendto(fd, (char *)header, plen, 0,
+				    &srv->addr.sa,
+				    sa_len(&srv->addr))))
+	        continue;
+
+	      if (errno == 0)
+	        {
+#ifdef HAVE_DUMPFILE
+	          dump_packet_udp(DUMP_UP_QUERY, (void *)header, plen, NULL, &srv->addr, fd);
 #endif
 
-	      srv->queries++;
-	      forwarded = 1;
-	      forward->sentto = srv;
-	      if (!forward->forwardall) 
-		break;
-	      forward->forwardall++;
+	          /* Keep info in case we want to re-send this packet */
+	          daemon->srv_save = srv;
+	          daemon->packet_len = plen;
+	          daemon->fd_save = fd;
+
+	          if (!gotname)
+		    strcpy(daemon->namebuff, "query");
+
+	          if (!(forward->flags & (FREC_DNSKEY_QUERY | FREC_DS_QUERY)))
+		    log_query_mysockaddr(F_SERVER | F_FORWARD, daemon->namebuff,
+				        &srv->addr, NULL, 0);
+#ifdef HAVE_DNSSEC
+	          else
+		    log_query_mysockaddr(F_NOEXTRA | F_DNSSEC | F_SERVER, daemon->namebuff, &srv->addr,
+				        (forward->flags & FREC_DNSKEY_QUERY) ? "dnssec-retry[DNSKEY]" : "dnssec-retry[DS]", 0);
+#endif
+
+	          srv->queries++;
+	          forwarded = 1;
+	          forward->sentto = srv;
+	          if (!forward->forwardall)
+		    break;
+	          forward->forwardall++;
+	        }
+	      /**** Pi-hole modification ****/
+	      else
+	        FTL_connection_error("failed to send UDP request", &srv->addr, -1);
+	      /******************************/
 	    }
-	    /**** Pi-hole modification ****/
-	    else
-	      FTL_connection_error("failed to send UDP request", &srv->addr, -1);
-	    /******************************/
-	}
-      
+        }
+
       if (++start == last)
 	break;
     }
@@ -2238,7 +2361,7 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 	  if (fatal || (!data_sent && (where = 1) && connect(serv->tcpfd, &serv->addr.sa, sa_len(&serv->addr)) == -1))
 	    {
 	      int port;
-	      
+
 	    failed:
 	      /**** Pi-hole modification ****/
 	      FTL_connection_error("TCP connection failed", &serv->addr, where);
@@ -2246,17 +2369,77 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 
 	      port = prettyprint_addr(&serv->addr, daemon->addrbuff);
 	      my_syslog(LOG_DEBUG|MS_DEBUG, _("TCP connection failed to %s#%d"), daemon->addrbuff, port);
+#ifdef HAVE_MBEDTLS
+	      if (serv->tls_hostname)
+		dot_close(serv);
+#endif
 	      close(serv->tcpfd);
 	      serv->tcpfd = -1;
 	      continue;
 	    }
-	  
+
+#ifdef HAVE_MBEDTLS
+	  /* ── FTL-DoT: TLS handshake after TCP connect ── */
+	  if (serv->tls_hostname && dot_handshake(serv) != 0)
+	    {
+	      int port = prettyprint_addr(&serv->addr, daemon->addrbuff);
+	      my_syslog(LOG_WARNING, "DoT: TLS handshake failed with %s#%d (%s)",
+		         daemon->addrbuff, port, serv->tls_hostname);
+	      FTL_connection_error("DoT handshake failed", &serv->addr, where);
+	      dot_close(serv);
+	      close(serv->tcpfd);
+	      serv->tcpfd = -1;
+	      continue;
+	    }
+#endif
+
 	  daemon->serverarray[first]->last_server = start;
 	  serv->flags &= ~SERV_GOT_TCP;
 	}
-      
+
+#ifdef HAVE_MBEDTLS
+      /* ── FTL-DoT: I/O via TLS ── */
+      if (serv->tls_hostname)
+	{
+	  unsigned char lenbuf[2];
+	  int io_ok = 1;
+
+	  if (!data_sent)
+	    {
+	      if (!dot_send(serv, sendio))
+		{ where = 2; io_ok = 0; }
+	    }
+
+	  if (io_ok)
+	    {
+	      int r = dot_recv_length(serv, lenbuf);
+	      if (r <= 0) { where = 3; io_ok = 0; }
+	      else
+		{
+		  rsize = (unsigned int)((lenbuf[0] << 8) | lenbuf[1]);
+		  if (!expand_buf(recvbuff, rsize)) { where = 4; io_ok = 0; }
+		  else if (dot_recv_payload(serv, recvbuff->iov_base, rsize) != (int)rsize)
+		    { where = 5; io_ok = 0; }
+		}
+	    }
+
+	  if (!io_ok)
+	    {
+	      dot_close(serv);
+	      if (serv->flags & SERV_GOT_TCP)
+		{
+		  close(serv->tcpfd);
+		  serv->tcpfd = -1;
+		  goto retry;
+		}
+	      else
+		goto failed;
+	    }
+	}
+      else
+#endif
       /* We use the _ONCE variant of read_write() here because we've set a timeout on the tcp socket
-	 and wish to abort if the whole data is not read/written within the timeout. */      
+	 and wish to abort if the whole data is not read/written within the timeout. */
       if ((!data_sent && (where = 2) && !read_writev(serv->tcpfd, sendio, 2, RW_WRITE_ONCE)) ||
 	   ((where = 3) && !read_write(serv->tcpfd, (unsigned char *)&length, sizeof(length), RW_READ_ONCE)) ||
 	   ((where = 4) && !expand_buf(recvbuff, (rsize = ntohs(length)))) ||
