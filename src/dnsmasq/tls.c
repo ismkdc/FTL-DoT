@@ -240,17 +240,18 @@ int dot_handshake(struct server *serv)
   ret = mbedtls_ssl_get_session(&ctx->ssl, &ctx->session);
   ctx->sess_saved = (ret == 0) ? 1 : 0;
 
-  /* RFC 7858 §4: server MUST negotiate ALPN "dot". */
+  /* RFC 7858 §4: verify ALPN.  Reject wrong ALPN; allow absent ALPN
+   * (many real-world DoT servers including Google 8.8.8.8 omit it). */
   const char *alpn = mbedtls_ssl_get_alpn_protocol(&ctx->ssl);
-  if (!alpn || strcmp(alpn, "dot") != 0)
+  if (alpn != NULL && strcmp(alpn, "dot") != 0)
     {
-      my_syslog(LOG_ERR, "DoT: server %s did not negotiate ALPN 'dot' (got: %s) — aborting",
-                serv->tls_hostname, alpn ? alpn : "none");
+      my_syslog(LOG_ERR, "DoT: server %s returned wrong ALPN '%s' (expected 'dot')",
+                serv->tls_hostname, alpn);
       return -1;
     }
   my_syslog(LOG_DEBUG|MS_DEBUG,
-            "DoT: TLS handshake OK with %s (resumed=%d, ALPN=dot)",
-            serv->tls_hostname, ctx->sess_saved);
+            "DoT: TLS handshake OK with %s (resumed=%d, ALPN=%s)",
+            serv->tls_hostname, ctx->sess_saved, alpn ? alpn : "none");
   return 0;
 }
 
@@ -661,16 +662,19 @@ void dot_advance(time_t now, struct server *serv)
         mbedtls_ssl_session_init(&ctx->session);
         if (mbedtls_ssl_get_session(&ctx->ssl, &ctx->session) == 0) ctx->sess_saved = 1;
 
-        /* RFC 7858 §4: verify ALPN "dot". */
+        /* RFC 7858 §4: verify ALPN.
+         * If server returns a different ALPN value, refuse (wrong protocol).
+         * If server sends no ALPN at all (common with Google 8.8.8.8:853),
+         * log a warning and continue — the TLS tunnel is still intact. */
         const char *alpn = mbedtls_ssl_get_alpn_protocol(&ctx->ssl);
-        if (!alpn || strcmp(alpn, "dot") != 0)
+        if (alpn != NULL && strcmp(alpn, "dot") != 0)
           {
-            my_syslog(LOG_ERR, "DoT: %s did not negotiate ALPN 'dot' (got: %s)",
-                      serv->tls_hostname, alpn ? alpn : "none");
+            my_syslog(LOG_ERR, "DoT: %s returned wrong ALPN '%s' (expected 'dot')",
+                      serv->tls_hostname, alpn);
             dot_fail(serv); return;
           }
-        my_syslog(LOG_DEBUG|MS_DEBUG, "DoT: handshake OK with %s (resumed=%d)",
-                  serv->tls_hostname, ctx->sess_saved);
+        my_syslog(LOG_DEBUG|MS_DEBUG, "DoT: handshake OK with %s (resumed=%d, ALPN=%s)",
+                  serv->tls_hostname, ctx->sess_saved, alpn ? alpn : "none");
         serv->dot_state = DOT_STATE_SENDING;
       }
       /* FALLTHROUGH */
