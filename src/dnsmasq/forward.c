@@ -572,27 +572,21 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
                 {
                   srv->tcpfd = socket(srv->addr.sa.sa_family, SOCK_STREAM, 0);
                   if (srv->tcpfd == -1)
-                    break; /* socket() failed; give up */
+                    break;
 
                   tv.tv_sec = TCP_TIMEOUT; tv.tv_usec = 0;
                   setsockopt(srv->tcpfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
                   tv.tv_sec += TCP_TIMEOUT;
                   setsockopt(srv->tcpfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-                  if (!local_bind(srv->tcpfd, &srv->source_addr, srv->interface, 0, 1) ||
-                      connect(srv->tcpfd, &srv->addr.sa, sa_len(&srv->addr)) == -1)
-                    {
-                      close(srv->tcpfd);
-                      srv->tcpfd = -1;
-                      break;
-                    }
+                  if (!local_bind(srv->tcpfd, &srv->source_addr, srv->interface, 0, 1))
+                    { close(srv->tcpfd); srv->tcpfd = -1; break; }
+
+                  if (connect(srv->tcpfd, &srv->addr.sa, sa_len(&srv->addr)) == -1)
+                    { close(srv->tcpfd); srv->tcpfd = -1; break; }
 
                   if (dot_handshake(srv) != 0)
-                    {
-                      close(srv->tcpfd);
-                      srv->tcpfd = -1;
-                      break;
-                    }
+                    { close(srv->tcpfd); srv->tcpfd = -1; break; }
 
                   srv->flags &= ~SERV_GOT_TCP;
                   had_tcp = 0; /* fresh; don't retry on first I/O failure */
@@ -607,9 +601,8 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
                   if (r > 0)
                     {
                       ssize_t resp_len = (ssize_t)((lenbuf[0] << 8) | lenbuf[1]);
-                      if ((size_t)resp_len <= daemon->packet_buff_sz &&
-                          dot_recv_payload(srv, (unsigned char *)daemon->packet,
-                                           (size_t)resp_len) == (int)resp_len)
+                      int pr = dot_recv_payload(srv, (unsigned char *)daemon->packet, (size_t)resp_len);
+                      if ((size_t)resp_len <= daemon->packet_buff_sz && pr == (int)resp_len)
                         {
                           srv->flags |= SERV_GOT_TCP;
                           rsize = resp_len;
