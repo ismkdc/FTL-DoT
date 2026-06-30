@@ -15,7 +15,6 @@
 /* mbedTLS 4.x replaced entropy/ctr_drbg with PSA Crypto. */
 #if MBEDTLS_VERSION_MAJOR >= 4
 #  include <psa/crypto.h>
-#  include <mbedtls/psa_util.h>
 #else
 #  include <mbedtls/entropy.h>
 #  include <mbedtls/ctr_drbg.h>

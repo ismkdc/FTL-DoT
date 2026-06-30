@@ -31,7 +31,6 @@
 
 #if MBEDTLS_VERSION_MAJOR >= 4
 #  include <psa/crypto.h>
-#  include <mbedtls/psa_util.h>
 #else
 #  include <mbedtls/entropy.h>
 #  include <mbedtls/ctr_drbg.h>
@@ -153,16 +152,18 @@ int dot_server_init(struct server *serv)
   mbedtls_ssl_conf_authmode(&ctx->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
   mbedtls_ssl_conf_ca_chain(&ctx->conf, &ctx->cacert, NULL);
 
-  /* RNG: PSA on mbedTLS 4.x, classic ctr_drbg on 3.x. */
-#if MBEDTLS_VERSION_MAJOR >= 4
-  mbedtls_ssl_conf_rng(&ctx->conf, mbedtls_psa_get_random,
-                        MBEDTLS_PSA_RANDOM_STATE);
-#else
+  /* RNG: mbedTLS 4.x uses PSA internally — no explicit conf needed.
+   * mbedTLS 3.x requires an explicit callback. */
+#if MBEDTLS_VERSION_MAJOR < 4
   mbedtls_ssl_conf_rng(&ctx->conf, dot_rng, NULL);
 #endif
 
-  /* Minimum TLS 1.2; prefer TLS 1.3 when available. */
+  /* Minimum TLS 1.2; constant was renamed in mbedTLS 4.x. */
+#if MBEDTLS_VERSION_MAJOR >= 4
+  mbedtls_ssl_conf_min_tls_version(&ctx->conf, MBEDTLS_SSL_VERSION_TLS1_2);
+#else
   mbedtls_ssl_conf_min_tls_version(&ctx->conf, MBEDTLS_TLS_VERSION_1_2);
+#endif
 
   /* ALPN "dot" as required by RFC 7858. */
   ret = mbedtls_ssl_conf_alpn_protocols(&ctx->conf, dot_alpn);
