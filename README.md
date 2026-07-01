@@ -2,6 +2,8 @@
 
 Fork of [pi-hole/FTL](https://github.com/pi-hole/FTL) with native **DNS-over-TLS** (RFC 7858) support.
 
+Not affiliated with or endorsed by the official Pi-hole project. "Pi-hole" is a trademark of Pi-hole LLC.
+
 mbedTLS is already compiled into FTL for the web server, this fork reuses it to add a synchronous TCP+TLS upstream path directly inside the DNS forwarder (`dnsmasq/forward.c`). No extra process, no sidecar, no unbound.
 
 ## Usage
