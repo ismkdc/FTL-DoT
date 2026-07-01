@@ -19,6 +19,9 @@
 
 /* dnsmasq.h has to be included first as it sources config.h */
 #include "dnsmasq.h"
+#ifdef HAVE_MBEDTLS
+#  include "tls.h"
+#endif
 
 #if defined(HAVE_IDN) || defined(HAVE_LIBIDN2) || defined(LOCALEDIR)
 #include <locale.h>
@@ -1926,7 +1929,20 @@ static void set_dns_listeners(void)
   struct listener *listener;
   struct randfd_list *rfl;
   int i;
-  
+
+#ifdef HAVE_MBEDTLS
+  /* Register every busy pooled DoT connection's fd with the poll loop. */
+  {
+    struct server *srv;
+    int _k;
+    for (srv = daemon->servers; srv; srv = srv->next)
+      if (srv->tls_hostname)
+        for (_k = 0; _k < DOT_CONN_MAX; _k++)
+          if (srv->dot_conn[_k].state != DOT_STATE_IDLE && srv->dot_conn[_k].tcpfd != -1)
+            poll_listen(srv->dot_conn[_k].tcpfd, dot_poll_events(srv, _k));
+  }
+#endif
+
   for (serverfdp = daemon->sfds; serverfdp; serverfdp = serverfdp->next)
     poll_listen(serverfdp->fd, POLLIN);
     
@@ -1968,11 +1984,28 @@ static void check_dns_listeners(time_t now)
   struct listener *listener;
   struct randfd_list *rfl;
   int i;
-  
+
   /* Note that handling events here can create or destroy fds and
      render the result of the last poll() call invalid. Once
      we find an fd that needs service, do it, then return to go around the
      poll() loop again. This avoid really, really, wierd bugs. */
+
+#ifdef HAVE_MBEDTLS
+  /* Advance any pooled DoT connection's state machine that has I/O ready. */
+  {
+    struct server *srv;
+    int _k;
+    for (srv = daemon->servers; srv; srv = srv->next)
+      if (srv->tls_hostname)
+        for (_k = 0; _k < DOT_CONN_MAX; _k++)
+          if (srv->dot_conn[_k].state != DOT_STATE_IDLE && srv->dot_conn[_k].tcpfd != -1 &&
+              poll_check(srv->dot_conn[_k].tcpfd, dot_poll_events(srv, _k)))
+            {
+              dot_advance(now, srv, _k);
+              return; /* re-enter poll loop; fds may have changed */
+            }
+  }
+#endif
 
   if (!option_bool(OPT_DEBUG))
     for (i = 0; i < daemon->max_procs; i++)

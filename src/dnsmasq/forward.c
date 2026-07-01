@@ -16,6 +16,9 @@
 
 #include "dnsmasq.h"
 #include "dnsmasq_interface.h"
+#ifdef HAVE_MBEDTLS
+#  include "tls.h"
+#endif
 
 static struct frec *get_new_frec(time_t now, struct server *serv, int force);
 static struct frec *lookup_frec(time_t now, char *target, int class, int rrtype, int id, int flags, int flagmask);
@@ -531,66 +534,119 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
   /* Advertise the size of UDP reply we can accept. */
   plen = add_pseudoheader(header, plen, daemon->edns_pktsz, 0, NULL, 0, 0, 0);
 
-  /* check for send errors here (no route to host) 
+  /* check for send errors here (no route to host)
      if we fail to send to all nameservers, send back an error
      packet straight away (helps modem users when offline)  */
 
+  /* Remember where the scan started so we can detect a full circle below.
+   * In sticky mode (forwardall == 0) "start" is master->last_server, which
+   * may be partway through the array: without wrapping, servers before it
+   * are never even tried. That is harmless for fire-and-forget UDP, but for
+   * DoT (one in-flight + one queued slot per server) the sticky server is
+   * busy under any real concurrency, so skipping the rest of the array means
+   * other idle DoT upstreams sit unused while queries are REFUSED outright. */
+  int start0 = start;
+
   while (1)
-    { 
-      int fd;
+    {
       struct server *srv = daemon->serverarray[start];
-      
-      if ((fd = allocate_rfd(&forward->rfds, srv)) != -1)
-	{
-	  
-#ifdef HAVE_CONNTRACK
-	  /* Copy connection mark of incoming query to outgoing connection. */
-	  if (option_bool(OPT_CONNTRACK))
-	    set_outgoing_mark(forward, fd);
-#endif
-	  if (retry_send(sendto(fd, (char *)header, plen, 0,
-				&srv->addr.sa,
-				sa_len(&srv->addr))))
-	    continue;
-	  
-	  if (errno == 0)
-	    {
-#ifdef HAVE_DUMPFILE
-	      dump_packet_udp(DUMP_UP_QUERY, (void *)header, plen, NULL, &srv->addr, fd);
-#endif
-	      
-	      /* Keep info in case we want to re-send this packet */
-	      daemon->srv_save = srv;
-	      daemon->packet_len = plen;
-	      daemon->fd_save = fd;
-	      
-	       if (!gotname)
-		 strcpy(daemon->namebuff, "query");
-	       
-	       if (!(forward->flags & (FREC_DNSKEY_QUERY | FREC_DS_QUERY)))
-		 log_query_mysockaddr(F_SERVER | F_FORWARD, daemon->namebuff,
-				      &srv->addr, NULL, 0);
+
+#ifdef HAVE_MBEDTLS
+      /* DoT server: async non-blocking path via state machine.
+       * dot_start() finds an idle pooled connection (struct server.dot_conn[],
+       * DOT_CONN_MAX per server) and initiates the connection/send on it;
+       * dot_advance() (called from check_dns_listeners() when that connection's
+       * fd is ready) delivers the reply via return_reply(). If every pooled
+       * connection is busy, dot_enqueue() queues behind them. Only when the
+       * queue is also full do we fall through to try the next server. */
+      if (srv->tls_hostname)
+        {
+          if (dot_start(srv, forward, header, plen) == 0 ||
+              dot_enqueue(srv, forward, header, plen) == 0)
+            {
+              /* Async op started or queued: log the forward and let the
+               * state machine run. */
+              if (!gotname)
+                strcpy(daemon->namebuff, "query");
+              if (!(forward->flags & (FREC_DNSKEY_QUERY | FREC_DS_QUERY)))
+                log_query_mysockaddr(F_SERVER | F_FORWARD, daemon->namebuff,
+                                     &srv->addr, NULL, 0);
 #ifdef HAVE_DNSSEC
-	       else
-		 log_query_mysockaddr(F_NOEXTRA | F_DNSSEC | F_SERVER, daemon->namebuff, &srv->addr,
-				      (forward->flags & FREC_DNSKEY_QUERY) ? "dnssec-retry[DNSKEY]" : "dnssec-retry[DS]", 0);
+              else
+                log_query_mysockaddr(F_NOEXTRA | F_DNSSEC | F_SERVER,
+                                     daemon->namebuff, &srv->addr,
+                                     (forward->flags & FREC_DNSKEY_QUERY) ?
+                                     "dnssec-retry[DNSKEY]" : "dnssec-retry[DS]", 0);
+#endif
+              forward->sentto = srv;
+              srv->queries++;
+              forwarded = 1;
+              break; /* exit server loop; state machine takes over */
+            }
+          /* Every pooled connection busy AND the queue is full.
+           * Fall through to try the next server in the array. */
+          my_syslog(LOG_DEBUG|MS_DEBUG,
+                    "DoT: server %s busy (all %d connections + queue full), trying next",
+                    srv->tls_hostname, DOT_CONN_MAX);
+        }
+      else
+#endif /* HAVE_MBEDTLS */
+        {
+          int fd;
+          if ((fd = allocate_rfd(&forward->rfds, srv)) != -1)
+	    {
+
+#ifdef HAVE_CONNTRACK
+	      /* Copy connection mark of incoming query to outgoing connection. */
+	      if (option_bool(OPT_CONNTRACK))
+	        set_outgoing_mark(forward, fd);
+#endif
+	      if (retry_send(sendto(fd, (char *)header, plen, 0,
+				    &srv->addr.sa,
+				    sa_len(&srv->addr))))
+	        continue;
+
+	      if (errno == 0)
+	        {
+#ifdef HAVE_DUMPFILE
+	          dump_packet_udp(DUMP_UP_QUERY, (void *)header, plen, NULL, &srv->addr, fd);
 #endif
 
-	      srv->queries++;
-	      forwarded = 1;
-	      forward->sentto = srv;
-	      if (!forward->forwardall) 
-		break;
-	      forward->forwardall++;
+	          /* Keep info in case we want to re-send this packet */
+	          daemon->srv_save = srv;
+	          daemon->packet_len = plen;
+	          daemon->fd_save = fd;
+
+	          if (!gotname)
+		    strcpy(daemon->namebuff, "query");
+
+	          if (!(forward->flags & (FREC_DNSKEY_QUERY | FREC_DS_QUERY)))
+		    log_query_mysockaddr(F_SERVER | F_FORWARD, daemon->namebuff,
+				        &srv->addr, NULL, 0);
+#ifdef HAVE_DNSSEC
+	          else
+		    log_query_mysockaddr(F_NOEXTRA | F_DNSSEC | F_SERVER, daemon->namebuff, &srv->addr,
+				        (forward->flags & FREC_DNSKEY_QUERY) ? "dnssec-retry[DNSKEY]" : "dnssec-retry[DS]", 0);
+#endif
+
+	          srv->queries++;
+	          forwarded = 1;
+	          forward->sentto = srv;
+	          if (!forward->forwardall)
+		    break;
+	          forward->forwardall++;
+	        }
+	      /**** Pi-hole modification ****/
+	      else
+	        FTL_connection_error("failed to send UDP request", &srv->addr, -1);
+	      /******************************/
 	    }
-	    /**** Pi-hole modification ****/
-	    else
-	      FTL_connection_error("failed to send UDP request", &srv->addr, -1);
-	    /******************************/
-	}
-      
+        }
+
       if (++start == last)
-	break;
+	start = first; /* wrap around instead of stopping short */
+      if (start == start0)
+	break; /* completed a full circle of the array */
     }
   
   if (forwarded || is_dnssec)
@@ -2238,7 +2294,7 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 	  if (fatal || (!data_sent && (where = 1) && connect(serv->tcpfd, &serv->addr.sa, sa_len(&serv->addr)) == -1))
 	    {
 	      int port;
-	      
+
 	    failed:
 	      /**** Pi-hole modification ****/
 	      FTL_connection_error("TCP connection failed", &serv->addr, where);
@@ -2246,17 +2302,77 @@ static ssize_t tcp_talk(int first, int last, int start, struct dns_header *heade
 
 	      port = prettyprint_addr(&serv->addr, daemon->addrbuff);
 	      my_syslog(LOG_DEBUG|MS_DEBUG, _("TCP connection failed to %s#%d"), daemon->addrbuff, port);
+#ifdef HAVE_MBEDTLS
+	      if (serv->tls_hostname)
+		dot_close(serv);
+#endif
 	      close(serv->tcpfd);
 	      serv->tcpfd = -1;
 	      continue;
 	    }
-	  
+
+#ifdef HAVE_MBEDTLS
+	  /* ── FTL-DoT: TLS handshake after TCP connect ── */
+	  if (serv->tls_hostname && dot_handshake(serv) != 0)
+	    {
+	      int port = prettyprint_addr(&serv->addr, daemon->addrbuff);
+	      my_syslog(LOG_WARNING, "DoT: TLS handshake failed with %s#%d (%s)",
+		         daemon->addrbuff, port, serv->tls_hostname);
+	      FTL_connection_error("DoT handshake failed", &serv->addr, where);
+	      dot_close(serv);
+	      close(serv->tcpfd);
+	      serv->tcpfd = -1;
+	      continue;
+	    }
+#endif
+
 	  daemon->serverarray[first]->last_server = start;
 	  serv->flags &= ~SERV_GOT_TCP;
 	}
-      
+
+#ifdef HAVE_MBEDTLS
+      /* ── FTL-DoT: I/O via TLS ── */
+      if (serv->tls_hostname)
+	{
+	  unsigned char lenbuf[2];
+	  int io_ok = 1;
+
+	  if (!data_sent)
+	    {
+	      if (!dot_send(serv, sendio))
+		{ where = 2; io_ok = 0; }
+	    }
+
+	  if (io_ok)
+	    {
+	      int r = dot_recv_length(serv, lenbuf);
+	      if (r <= 0) { where = 3; io_ok = 0; }
+	      else
+		{
+		  rsize = (unsigned int)((lenbuf[0] << 8) | lenbuf[1]);
+		  if (!expand_buf(recvbuff, rsize)) { where = 4; io_ok = 0; }
+		  else if (dot_recv_payload(serv, recvbuff->iov_base, rsize) != (int)rsize)
+		    { where = 5; io_ok = 0; }
+		}
+	    }
+
+	  if (!io_ok)
+	    {
+	      dot_close(serv);
+	      if (serv->flags & SERV_GOT_TCP)
+		{
+		  close(serv->tcpfd);
+		  serv->tcpfd = -1;
+		  goto retry;
+		}
+	      else
+		goto failed;
+	    }
+	}
+      else
+#endif
       /* We use the _ONCE variant of read_write() here because we've set a timeout on the tcp socket
-	 and wish to abort if the whole data is not read/written within the timeout. */      
+	 and wish to abort if the whole data is not read/written within the timeout. */
       if ((!data_sent && (where = 2) && !read_writev(serv->tcpfd, sendio, 2, RW_WRITE_ONCE)) ||
 	   ((where = 3) && !read_write(serv->tcpfd, (unsigned char *)&length, sizeof(length), RW_READ_ONCE)) ||
 	   ((where = 4) && !expand_buf(recvbuff, (rsize = ntohs(length)))) ||
@@ -3271,8 +3387,25 @@ static void free_frec(struct frec *f)
   f->dependent = NULL;
   f->next_dependent = NULL;
 #endif
+
+#ifdef HAVE_MBEDTLS
+  /* Drop any DoT job (pipelined-in-flight or queued) tied to this frec.
+   * dot_advance() is only called when a DoT fd fires in the poll loop; an
+   * unresponsive upstream never fires, so without this the job would sit
+   * until OS TCP timeout (~75-127 s). This only removes f's own job, other
+   * jobs pipelined on the same connection are untouched, and a late reply
+   * for f's wire ID is simply discarded when it eventually arrives (see
+   * dot_gc_frec() in tls.c). */
+  dot_gc_frec(f);
+#endif
 }
 
+/* Public wrapper so tls.c can release a frec from the orphan-frec fix
+ * without exposing the static free_frec() across translation units. */
+void frec_free(struct frec *f)
+{
+  free_frec(f);
+}
 
 
 /* Impose an absolute

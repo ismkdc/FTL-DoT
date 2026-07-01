@@ -346,7 +346,14 @@ bool __attribute__((nonnull(1,3))) write_dnsmasq_config(struct config *conf, boo
 		{
 			cJSON *server = cJSON_GetArrayItem(conf->dns.upstreams.v.json, i);
 			if(server != NULL && cJSON_IsString(server))
-				fprintf(pihole_conf, "server=%s\n", server->valuestring);
+			{
+				const char *val = server->valuestring;
+				/* tls:// prefix → emit tls-server= directive (FTL-DoT) */
+				if(strncmp(val, "tls://", 6) == 0)
+					fprintf(pihole_conf, "tls-server=%s\n", val + 6);
+				else
+					fprintf(pihole_conf, "server=%s\n", val);
+			}
 		}
 		fputs("\n", pihole_conf);
 	}

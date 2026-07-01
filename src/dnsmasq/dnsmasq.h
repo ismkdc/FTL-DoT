@@ -604,6 +604,18 @@ union mysockaddr {
 #define SERV_DO_DNSSEC      16384  /* Validate DNSSEC when using this server */
 #define SERV_GOT_TCP        32768  /* Got some data from the TCP connection */
 
+/* Async DoT state machine states (FTL-DoT fork). ACTIVE covers what used to
+ * be three separate SENDING/RECV_LEN/RECV_PAYLOAD states: once a connection
+ * is established it pipelines multiple queries (RFC 7766) and services
+ * writes and reads for whichever jobs need them, rather than dedicating the
+ * whole connection to one query's send-then-receive lifecycle. */
+#ifdef HAVE_MBEDTLS
+#define DOT_STATE_IDLE         0  /* no connection, nothing queued */
+#define DOT_STATE_CONNECTING   1  /* non-blocking TCP connect in progress */
+#define DOT_STATE_HANDSHAKING  2  /* TLS handshake in progress */
+#define DOT_STATE_ACTIVE       3  /* connected; pipelining queries */
+#endif
+
 struct serverfd {
   int fd;
   union mysockaddr source_addr;
@@ -633,7 +645,7 @@ struct server {
   union mysockaddr addr, source_addr;
   char interface[IF_NAMESIZE+1];
   unsigned int ifindex; /* corresponding to interface, above */
-  struct serverfd *sfd; 
+  struct serverfd *sfd;
   int tcpfd;
   unsigned int queries, failed_queries, nxdomain_replies, retrys;
   unsigned int query_latency, mma_latency;
@@ -641,6 +653,63 @@ struct server {
   int forwardcount;
 #ifdef HAVE_LOOP
   u32 uid;
+#endif
+#ifdef HAVE_MBEDTLS
+  /* DoT support (FTL-DoT fork). NULL tls_hostname = plain DNS. */
+  char *tls_hostname;     /* SNI + cert verification hostname; heap-allocated */
+  void *tls_ctx;          /* struct tls_server_ctx *; used only by the synchronous
+                           * TCP-fallback path (dot_handshake/dot_send/dot_recv_*) */
+
+  /* Async DoT state machine: a small pool of concurrent TCP+TLS connections
+   * per server (DOT_CONN_MAX), each pipelining up to DOT_JOB_MAX queries at
+   * once (RFC 7766) instead of dedicating a whole connection to one query's
+   * send-then-receive lifecycle. Queries are demultiplexed off each
+   * connection by the 16-bit DNS transaction ID already used to correlate
+   * plain UDP forwarding (dnsmasq's get_id()/lookup_frec() machinery);
+   * the same collision-avoidance guarantees apply here. */
+#define DOT_CONN_MAX 4
+#define DOT_JOB_MAX 32
+  struct {
+    int            state;        /* DOT_STATE_* */
+    int            tcpfd;
+    int            alive;        /* 1 = TLS session up, safe to reuse on reconnect */
+    void          *actx;         /* struct dot_async_ctx *; opaque to avoid mbedtls headers here */
+
+    /* Queries owned by this connection, packed at indices [0, job_count).
+     * buf != NULL means not yet fully written (send in progress/queued);
+     * buf == NULL means sent and awaiting a reply, matched by wire_id.
+     * Always appended at the end, so index 0 is the oldest surviving job. */
+    struct {
+      struct frec   *frec;
+      unsigned char *buf;
+      size_t         len;
+      size_t         off;
+      u16            wire_id;
+    } jobs[DOT_JOB_MAX];
+    int            job_count;
+
+    /* Response currently being read off the wire, one at a time; dot_advance()
+     * loops internally to drain any further responses already buffered
+     * before returning to the poll loop. */
+    unsigned char  lenbuf[2];    /* response 2-byte length prefix accumulator */
+    size_t         lenbytes;     /* 0..2 bytes received into lenbuf */
+    size_t         rsplen;       /* expected response payload length */
+    unsigned char *rspbuf;       /* response payload buffer; allocated once, reused */
+    size_t         rspoff;       /* bytes of payload received so far */
+  } dot_conn[DOT_CONN_MAX];
+
+  void *dot_shared_ctx;   /* struct dot_shared_ctx *; CA chain/ALPN/session, shared by dot_conn[] */
+
+  /* Overflow queue for the rare case where every pooled connection's
+   * DOT_JOB_MAX pipeline is completely full. Drained as connections free up
+   * a job slot (see dot_start_pending() in tls.c). */
+#define DOT_PENDING_MAX 16
+  struct {
+    unsigned char *buf;   /* [2-byte-len][dns-query], heap */
+    size_t         len;
+    struct frec   *frec;  /* frec->sentto==serv validates it wasn't recycled */
+  } dot_pending[DOT_PENDING_MAX];
+  int dot_pending_count;  /* valid entries, packed at indices [0, count) */
 #endif
 };
 
@@ -1605,6 +1674,7 @@ int tcp_from_udp(time_t now, int status, struct dns_header *header, ssize_t *n,
 void tcp_request(int confd, time_t now, struct iovec *bigbuff,
 		 union mysockaddr *local_addr, struct in_addr netmask, int auth_dns);
 void server_gone(struct server *server);
+void frec_free(struct frec *f); /* public wrapper around static free_frec() */
 int send_from(int fd, int nowild, char *packet, size_t len, 
 	       union mysockaddr *to, union all_addr *source,
 	       unsigned int iface);

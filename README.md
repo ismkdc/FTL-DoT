@@ -1,32 +1,43 @@
-<p align="center">
-  <a href="https://pi-hole.net/">
-    <img src="https://raw.githubusercontent.com/pi-hole/graphics/refs/heads/master/Vortex/vortex_with_text.svg" alt="Pi-hole logo" width="80" height="128">
-  </a>
-  <br>
-  <strong>Network-wide ad blocking via your own Linux hardware</strong>
-  <br>
-  <br>
-  <a href="https://pi-hole.net/">
-    <img src="https://raw.githubusercontent.com/pi-hole/graphics/refs/heads/master/FTLDNS/FTLDNS.svg" alt="FTLDNS logo" width="500" height="128">
-  </a>
-</p>
+# FTL-DoT
 
-FTLDNS (`pihole-FTL`) provides an interactive API and also generates statistics for Pi-hole[®](https://pi-hole.net/trademark-rules-and-brand-guidelines/)'s Web interface.
+Fork of [pi-hole/FTL](https://github.com/pi-hole/FTL) with native **DNS-over-TLS** (RFC 7858) support.
 
-- **Fast**: stats are read directly from memory by coupling our codebase closely with `dnsmasq`
-- **Versatile**: upstream changes to `dnsmasq` can quickly be merged in without much conflict
-- **Lightweight**: runs smoothly with [minimal hardware and software requirements](https://discourse.pi-hole.net/t/hardware-software-requirements/273) such as Raspberry Pi Zero
-- **Interactive**: our API can be used to interface with your projects
-- **Insightful**: stats normally reserved inside of `dnsmasq` are made available so you can see what's really happening on your network
+mbedTLS is already compiled into FTL for the web server, this fork reuses it to add a synchronous TCP+TLS upstream path directly inside the DNS forwarder (`dnsmasq/forward.c`). No extra process, no sidecar, no unbound.
 
-## Official documentation
+## Usage
 
-The official *FTL*DNS documentation can be found [here](https://docs.pi-hole.net/ftldns/).
+Set `FTLCONF_dns_upstreams` with `tls://ip#port#tls-hostname`:
 
-## Installation
+```
+tls://8.8.8.8#853#dns.google;tls://8.8.4.4#853#dns.google
+```
 
-FTLDNS (`pihole-FTL`) is automatically installed when installing Pi-hole.
+Multiple upstreams semicolon-separated. Any RFC 7858 compliant server works, see [ismkdc/docker-pihole-dot](https://github.com/ismkdc/docker-pihole-dot) for the ready-to-use Docker image.
 
-### IMPORTANT
+## Building
 
->FTLDNS will *disable* any existing installations of `dnsmasq`. This is because FTLDNS *is* `dnsmasq` + Pi-hole's code, so both cannot run simultaneously.
+```bash
+# Alpine 3.24
+apk add build-base cmake mbedtls-dev mbedtls-static libcap-dev nettle-dev \
+        lua5.4-dev sqlite-dev libevent-dev libidn2-dev libunistring-dev readline-dev
+
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DSTATIC=false
+make -j$(nproc) pihole-FTL
+```
+
+## Key implementation detail
+
+TLS 1.3 servers send a `NewSessionTicket` message immediately after the handshake, before the first DNS response. mbedTLS 4.x returns `MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET` (-0x7B00) from `mbedtls_ssl_read()` for this event. Without handling it, every first query after a fresh TLS connection fails silently. Fixed in `src/dnsmasq/tls.c` by treating this as a retry signal.
+
+## Releases
+
+Pre-built binaries for all 5 architectures on the [Releases](https://github.com/ismkdc/FTL-DoT/releases) page, auto-downloaded by the Docker image.
+
+| Binary | Architecture |
+|---|---|
+| `pihole-FTL-amd64` | x86-64 |
+| `pihole-FTL-arm64` | ARM 64-bit |
+| `pihole-FTL-armv7` | ARM 32-bit v7 |
+| `pihole-FTL-armv6` | ARM 32-bit v6 |
+| `pihole-FTL-riscv64` | RISC-V 64-bit |

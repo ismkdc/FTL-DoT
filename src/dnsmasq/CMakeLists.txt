@@ -59,6 +59,8 @@ set(sources
         tftp.c
         ubus.c
         util.c
+        tls.c
+        tls.h
         )
 
 add_library(dnsmasq OBJECT ${sources})
