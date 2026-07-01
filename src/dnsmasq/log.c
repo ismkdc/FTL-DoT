@@ -302,6 +302,17 @@ void my_syslog(int priority, const char *format, ...)
   pid_t pid = getpid();
   char *func = "";
 
+  /* Pi-hole modification: a logging call must not have observable side
+   * effects on the caller's errno. Several callers (e.g. tls.c's
+   * FTL_connection_error() call sites) log a message about a failed
+   * syscall and then read errno afterwards; internal calls here
+   * (vsnprintf, FTL_dnsmasq_log, vasprintf, ...) can set errno on their
+   * own even when they succeed, silently replacing the real error with
+   * an unrelated one (observed: a real EAGAIN from a DoT handshake
+   * timeout showing up downstream as ENOENT). Restore it on every exit
+   * path. */
+  const int saved_errno = errno;
+
   if ((LOG_FACMASK & priority) == MS_TFTP)
     func = "-tftp";
   else if ((LOG_FACMASK & priority) == MS_DHCP)
@@ -311,7 +322,10 @@ void my_syslog(int priority, const char *format, ...)
   else if ((LOG_FACMASK & priority) == MS_DEBUG)
     {
       if (!option_bool(OPT_LOG_DEBUG))
-	return;
+	{
+	  errno = saved_errno;
+	  return;
+	}
       func = "-debug";
     }
   
@@ -381,11 +395,12 @@ void my_syslog(int priority, const char *format, ...)
 	  openlog("dnsmasq", LOG_PID, log_fac);
 	  isopen = 1;
 	}
-      va_start(ap, format);  
+      va_start(ap, format);
       vsyslog(priority, format, ap);
       va_end(ap);
 #endif
 
+      errno = saved_errno;
       return;
     }
   
@@ -465,7 +480,9 @@ void my_syslog(int priority, const char *format, ...)
 	  /* Have another go now */
 	  log_write();
 	}
-    } 
+    }
+
+  errno = saved_errno;
 }
 
 void set_log_writer(void)
