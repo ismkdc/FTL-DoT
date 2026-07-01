@@ -1,6 +1,6 @@
 # FTL-DoT
 
-Fork of [pi-hole/FTL](https://github.com/pi-hole/FTL) with native **DNS-over-TLS** (RFC 7858) support.
+Fork of upstream FTL (pihole's DNS engine) with native **DNS-over-TLS** (RFC 7858) support.
 
 Not affiliated with or endorsed by the official Pi-hole project. "Pi-hole" is a trademark of Pi-hole LLC.
 
