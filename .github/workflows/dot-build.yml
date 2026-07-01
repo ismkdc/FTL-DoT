@@ -85,12 +85,17 @@ jobs:
                 -DCMAKE_BUILD_TYPE=Release \
                 -DSTATIC=false
               make -j\$(nproc) pihole-FTL
-              strip pihole-FTL
 
-              # Append sha256 (same as upstream FTL does)
+              # CMakeLists.txt's own POST_BUILD step already appended the
+              # self-integrity footer FTL's verify_FTL() expects: a 9-byte
+              # \"sha256sum\" marker followed by the 32-byte SHA256 of
+              # everything before it. Stripping afterwards would discard
+              # those trailing bytes (they aren't part of any ELF section),
+              # so don't strip and don't re-append our own checksum here —
+              # that used to write just a bare 32-byte hash with no marker,
+              # which verify_FTL() silently rejected as \"no checksum mark\".
               SHA256=\$(sha256sum pihole-FTL | cut -d' ' -f1)
-              echo -n \"\$SHA256\" | xxd -r -p >> pihole-FTL
-              echo \"SHA256: \$SHA256\"
+              echo \"SHA256 (includes self-integrity footer): \$SHA256\"
 
               cp pihole-FTL /src/pihole-FTL-${{ matrix.ftlarch }}
               chmod +x /src/pihole-FTL-${{ matrix.ftlarch }}
