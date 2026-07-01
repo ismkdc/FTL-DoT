@@ -68,11 +68,13 @@ jobs:
               apk add --no-cache \
                 build-base cmake git \
                 mbedtls-dev mbedtls-static \
-                libcap-dev nettle-dev \
-                lua5.4-dev sqlite-dev \
-                libevent-dev \
-                libidn2-dev libunistring-dev \
-                readline-dev \
+                libcap-dev libcap-static \
+                nettle-dev nettle-static \
+                lua5.4-dev \
+                sqlite-dev sqlite-static \
+                libevent-dev libevent-static \
+                libidn2-dev libidn2-static libunistring-dev \
+                readline-dev readline-static ncurses-static \
                 xxd \
                 ca-certificates
 
@@ -83,8 +85,15 @@ jobs:
               cd /tmp/ftl-build
               cmake /src \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DSTATIC=false
+                -DSTATIC=true
               make -j\$(nproc) pihole-FTL
+
+              # Static build: no runtime dependency on the host's libc, so
+              # the same binary works both inside this Alpine/musl-based
+              # Docker image and on a glibc bare-metal install (Debian,
+              # Ubuntu, ...) via the official pi-hole installer's FTL
+              # download step.
+              file pihole-FTL
 
               # CMakeLists.txt's own POST_BUILD step already appended the
               # self-integrity footer FTL's verify_FTL() expects: a 9-byte
@@ -97,29 +106,45 @@ jobs:
               SHA256=\$(sha256sum pihole-FTL | cut -d' ' -f1)
               echo \"SHA256 (includes self-integrity footer): \$SHA256\"
 
+              # pi-hole/pi-hole's own installer (FTLinstall() in
+              # automated install/basic-install.sh) verifies the download
+              # against a companion <binary>.sha1 file, not the embedded
+              # footer. Produce that too so bare-metal installs work the
+              # same way upstream's do.
+              sha1sum pihole-FTL | cut -d' ' -f1 > pihole-FTL.sha1
+
               cp pihole-FTL /src/pihole-FTL-${{ matrix.ftlarch }}
+              cp pihole-FTL.sha1 /src/pihole-FTL-${{ matrix.ftlarch }}.sha1
               chmod +x /src/pihole-FTL-${{ matrix.ftlarch }}
             "
 
       - name: Smoke test (amd64 only)
         if: matrix.arch == 'amd64'
         run: |
+          # Run on a plain glibc base (not Alpine) with none of the build
+          # deps installed, to confirm the static binary really has no
+          # runtime library requirements and works on a bare-metal-style
+          # host, not just inside the Alpine image it was built in.
           docker run --rm --platform linux/amd64 \
             -v "${{ github.workspace }}:/work" \
-            alpine:3.24 \
+            debian:bookworm-slim \
             sh -c "
-              apk add --no-cache libgcc libcap lua5.4-libs sqlite-libs nettle libidn2 libevent readline mbedtls ca-certificates binutils
-              echo '=== Version ==='
+              echo '=== Version (glibc host, no deps installed) ==='
               /work/pihole-FTL-amd64 --version
               echo '=== DoT symbols ==='
-              strings /work/pihole-FTL-amd64 | grep -q 'dot_global_init' && echo 'DoT: OK' || { echo 'DoT: NOT FOUND'; exit 1; }
+              grep -qa 'dot_global_init' /work/pihole-FTL-amd64 && echo 'DoT: OK' || { echo 'DoT: NOT FOUND'; exit 1; }
+              echo '=== sha1 matches ==='
+              [ \"\$(sha1sum /work/pihole-FTL-amd64 | cut -d' ' -f1)\" = \"\$(cat /work/pihole-FTL-amd64.sha1)\" ] || { echo 'sha1 MISMATCH'; exit 1; }
+              echo 'sha1: OK'
             "
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
         with:
           name: pihole-FTL-${{ matrix.ftlarch }}
-          path: pihole-FTL-${{ matrix.ftlarch }}
+          path: |
+            pihole-FTL-${{ matrix.ftlarch }}
+            pihole-FTL-${{ matrix.ftlarch }}.sha1
           retention-days: 7
 
   release:
@@ -147,6 +172,7 @@ jobs:
             - `tls-server=<ip>#<port>#<hostname>` dnsmasq directive
             - `tls://ip#port#hostname` format in `dns.upstreams` FTLCONF
             - mbedTLS with ALPN "dot", TLS 1.2+, cert verification, session resumption
+            - Statically linked: same binary works in the Docker image and on a bare-metal install (each release includes a `<binary>.sha1` file, same layout the official pi-hole installer's `FTLinstall()` expects)
 
             ### Usage
             ```yaml
