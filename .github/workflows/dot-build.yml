@@ -111,9 +111,12 @@ jobs:
               # pi-hole/pi-hole's own installer (FTLinstall() in
               # automated install/basic-install.sh) verifies the download
               # against a companion <binary>.sha1 file, not the embedded
-              # footer. Produce that too so bare-metal installs work the
-              # same way upstream's do.
-              sha1sum pihole-FTL | cut -d' ' -f1 > pihole-FTL.sha1
+              # footer. It runs \"sha1sum -c <binary>.sha1\" in the directory
+              # where it just downloaded the binary under its final name
+              # (pihole-FTL-<arch>), so the checksum line must reference
+              # that exact filename, not just be a bare hash.
+              SHA1=\$(sha1sum pihole-FTL | cut -d' ' -f1)
+              echo \"\${SHA1}  pihole-FTL-${{ matrix.ftlarch }}\" > pihole-FTL.sha1
 
               cp pihole-FTL /src/pihole-FTL-${{ matrix.ftlarch }}
               cp pihole-FTL.sha1 /src/pihole-FTL-${{ matrix.ftlarch }}.sha1
@@ -135,8 +138,8 @@ jobs:
               /work/pihole-FTL-amd64 --version
               echo '=== DoT symbols ==='
               grep -qa 'dot_global_init' /work/pihole-FTL-amd64 && echo 'DoT: OK' || { echo 'DoT: NOT FOUND'; exit 1; }
-              echo '=== sha1 matches ==='
-              [ \"\$(sha1sum /work/pihole-FTL-amd64 | cut -d' ' -f1)\" = \"\$(cat /work/pihole-FTL-amd64.sha1)\" ] || { echo 'sha1 MISMATCH'; exit 1; }
+              echo '=== sha1 matches (same check the pi-hole installer runs) ==='
+              cd /work && sha1sum --status --quiet -c pihole-FTL-amd64.sha1 || { echo 'sha1 MISMATCH'; exit 1; }
               echo 'sha1: OK'
             "
 
