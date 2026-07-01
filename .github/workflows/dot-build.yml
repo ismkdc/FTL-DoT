@@ -70,10 +70,12 @@ jobs:
                 mbedtls-dev mbedtls-static \
                 libcap-dev libcap-static \
                 nettle-dev nettle-static \
+                gmp-dev gmp-static \
                 lua5.4-dev \
                 sqlite-dev sqlite-static \
                 libevent-dev libevent-static \
-                libidn2-dev libidn2-static libunistring-dev \
+                libidn2-dev libidn2-static \
+                libunistring-dev libunistring-static \
                 readline-dev readline-static ncurses-static \
                 xxd \
                 ca-certificates
