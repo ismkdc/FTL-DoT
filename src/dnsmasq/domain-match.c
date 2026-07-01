@@ -15,6 +15,9 @@
 */
 
 #include "dnsmasq.h"
+#ifdef HAVE_MBEDTLS
+#  include "tls.h"
+#endif
 
 static int order(char *qdomain, size_t qlen, struct server *serv);
 static int order_qsort(const void *a, const void *b);
@@ -630,13 +633,17 @@ void cleanup_servers(void)
   struct server *serv, *tmp, **up;
 
   /* unlink and free anything still marked. */
-  for (serv = daemon->servers, up = &daemon->servers, daemon->servers_tail = NULL; serv; serv = tmp) 
+  for (serv = daemon->servers, up = &daemon->servers, daemon->servers_tail = NULL; serv; serv = tmp)
     {
       tmp = serv->next;
       if (serv->flags & SERV_MARK)
        {
          server_gone(serv);
          *up = serv->next;
+#ifdef HAVE_MBEDTLS
+	 dot_server_free(serv);   /* FTL-DoT: free TLS resources */
+	 free(serv->tls_hostname);
+#endif
 	 free(serv->domain);
 	 free(serv);
        }

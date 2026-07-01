@@ -1,0 +1,163 @@
+name: FTL-DoT Build & Release
+
+on:
+  push:
+    branches: ['feature/native-dot', 'master', 'development']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed for GitHub Release upload
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            ftlarch: amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            ftlarch: arm64
+          - arch: armv7
+            runner: ubuntu-latest
+            platform: linux/arm/v7
+            ftlarch: armv7
+          - arch: armv6
+            runner: ubuntu-latest
+            platform: linux/arm/v6
+            ftlarch: armv6
+          - arch: riscv64
+            runner: ubuntu-latest
+            platform: linux/riscv64
+            ftlarch: riscv64
+
+    steps:
+      - name: Checkout FTL-DoT
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # full history so git describe works for FTL version embed
+
+      - name: Set up QEMU
+        if: matrix.arch != 'arm64'
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build pihole-FTL binary for ${{ matrix.arch }}
+        env:
+          GIT_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          GIT_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            -e GIT_TAG="${{ github.ref_type == 'tag' && github.ref_name || '' }}" \
+            -e GIT_VERSION="${{ github.ref_type == 'tag' && github.ref_name || '' }}" \
+            alpine:3.24 \
+            sh -c "
+              set -ex
+              apk add --no-cache \
+                build-base cmake git \
+                mbedtls-dev mbedtls-static \
+                libcap-dev nettle-dev \
+                lua5.4-dev sqlite-dev \
+                libevent-dev \
+                libidn2-dev libunistring-dev \
+                readline-dev \
+                xxd \
+                ca-certificates
+
+              # Allow git to operate on the mounted workspace (owned by runner, not root)
+              git config --global --add safe.directory /src
+
+              mkdir -p /tmp/ftl-build
+              cd /tmp/ftl-build
+              cmake /src \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DSTATIC=false
+              make -j\$(nproc) pihole-FTL
+              strip pihole-FTL
+
+              # Append sha256 (same as upstream FTL does)
+              SHA256=\$(sha256sum pihole-FTL | cut -d' ' -f1)
+              echo -n \"\$SHA256\" | xxd -r -p >> pihole-FTL
+              echo \"SHA256: \$SHA256\"
+
+              cp pihole-FTL /src/pihole-FTL-${{ matrix.ftlarch }}
+              chmod +x /src/pihole-FTL-${{ matrix.ftlarch }}
+            "
+
+      - name: Smoke test (amd64 only)
+        if: matrix.arch == 'amd64'
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "${{ github.workspace }}:/work" \
+            alpine:3.24 \
+            sh -c "
+              apk add --no-cache libgcc libcap lua5.4-libs sqlite-libs nettle libidn2 libevent readline mbedtls ca-certificates binutils
+              echo '=== Version ==='
+              /work/pihole-FTL-amd64 --version
+              echo '=== DoT symbols ==='
+              strings /work/pihole-FTL-amd64 | grep -q 'dot_global_init' && echo 'DoT: OK' || { echo 'DoT: NOT FOUND'; exit 1; }
+            "
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pihole-FTL-${{ matrix.ftlarch }}
+          path: pihole-FTL-${{ matrix.ftlarch }}
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: binaries/
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v3
+        with:
+          name: "FTL-DoT ${{ github.ref_name }}"
+          body: |
+            ## FTL-DoT ${{ github.ref_name }}
+
+            Fork of [pi-hole/FTL](https://github.com/pi-hole/FTL) with native DNS-over-TLS (RFC 7858) support.
+
+            ### What's new
+            - `tls-server=<ip>#<port>#<hostname>` dnsmasq directive
+            - `tls://ip#port#hostname` format in `dns.upstreams` FTLCONF
+            - mbedTLS with ALPN "dot", TLS 1.2+, cert verification, session resumption
+
+            ### Usage
+            ```yaml
+            # docker-compose.yml
+            environment:
+              FTLCONF_dns_upstreams: '["tls://8.8.8.8#853#dns.google","tls://8.8.4.4#853#dns.google"]'
+            ```
+
+            ### Binaries
+            | File | Architecture |
+            |------|-------------|
+            | pihole-FTL-amd64 | x86-64 |
+            | pihole-FTL-arm64 | ARM 64-bit |
+            | pihole-FTL-armv7 | ARM 32-bit v7 |
+            | pihole-FTL-armv6 | ARM 32-bit v6 |
+            | pihole-FTL-riscv64 | RISC-V 64-bit |
+          files: binaries/*
+          draft: false
+          prerelease: false
